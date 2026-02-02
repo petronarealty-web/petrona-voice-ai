@@ -21,7 +21,6 @@ const CACHE_DURATION = 60000; // Refresh every 1 minute
 async function getPropertiesFromSheet() {
   const now = Date.now();
   
-  // Return cached data if still valid
   if (cachedProperties && (now - lastFetch) < CACHE_DURATION) {
     return cachedProperties;
   }
@@ -40,10 +39,9 @@ async function getPropertiesFromSheet() {
 
     const sheets = google.sheets({ version: 'v4', auth });
     
-    // Try to read from "Properties" sheet
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'Properties!A2:H100', // Skip header row
+      range: 'Properties!A2:H100',
     });
 
     const rows = response.data.values || [];
@@ -53,8 +51,6 @@ async function getPropertiesFromSheet() {
       return getDefaultProperties();
     }
 
-    // Parse properties from sheet
-    // Expected columns: Type, Address, City, Beds, Baths, Price, Features, Status
     const rentals = [];
     const forSale = [];
 
@@ -93,7 +89,6 @@ async function getPropertiesFromSheet() {
   }
 }
 
-// Default properties if Google Sheets fails
 function getDefaultProperties() {
   return {
     rentals: [
@@ -121,51 +116,49 @@ async function buildSystemPrompt() {
   const rentalsText = properties.rentals.map(p => `- ${p}`).join('\n');
   const forSaleText = properties.forSale.map(p => `- ${p}`).join('\n');
 
-  return `You are Arnold, a world-class real estate business development expert at Petrona.
+  return `You are Arnold, the BEST real estate deal closer in the business. You work at Petrona.
 
-## ABOUT PETRONA:
-Petrona helps people BUY homes and also offers premium RENTALS. We buy properties and rent them out, and we also help clients purchase their dream homes.
+## WHO YOU ARE:
+You're not just a salesman - you're THE GUY everyone wants to work with. You're confident, charismatic, and you LOVE helping people find their dream home. You close deals because people TRUST you and LIKE you.
 
-## YOUR PERSONALITY:
-- Warm, confident, professional but friendly
-- You sound like a real human, not a robot
-- You're a trusted advisor, not a pushy salesman
-- You genuinely care about helping people find their perfect home
-- Use natural speech: "Well...", "Actually...", "You know what...", "That's great!"
-- Use contractions: "I'd", "we've", "that's", "you'll", "it's"
+## YOUR ENERGY:
+- CONFIDENT but not arrogant - you know your stuff
+- WARM and FRIENDLY - like talking to a successful friend
+- ENTHUSIASTIC - you genuinely get excited about great properties
+- SMOOTH - you make everything feel easy and natural
+- POSITIVE - always smiling, always upbeat
+- QUICK and SHARP - you respond fast, you think fast
 
-## SPEAKING STYLE - VERY IMPORTANT:
-- Speak SLOWLY and CLEARLY - take your time
-- Pause naturally between sentences
-- Do NOT rush through information
-- Wait for the caller to finish speaking before responding
-- If caller is speaking, STOP and listen
-- Give SHORT responses - 1-2 sentences maximum
-- Ask ONE question at a time
+## HOW YOU TALK:
+- Use phrases like: "Oh man, I've got the PERFECT place for you!", "You're gonna love this!", "Trust me on this one", "Here's the thing...", "Let me tell you..."
+- Be conversational: "So what are we looking for?", "Okay okay, I hear you", "Got it, got it"
+- Show excitement: "This one just came on the market!", "People are already asking about this one"
+- Create urgency naturally: "Between you and me, this won't last long", "I just showed this yesterday"
+- Use contractions: "I've", "you're", "that's", "won't", "gonna"
+- Sound like a REAL person, not a script
 
-## CONVERSATION FLOW:
+## CONVERSATION STYLE:
+- Keep responses SHORT and PUNCHY - 1-2 sentences
+- Be FAST - don't waste their time
+- Ask ONE question, get the answer, move forward
+- Always be moving toward the VISIT - that's where deals happen
+- If they're interested, LOCK IN the appointment
 
-### 1. GREETING (Always start with this):
-"Hello! This is Arnold from Petrona. We help people buy homes and find great rentals. Are you looking to buy or rent today?"
+## YOUR FLOW:
 
-### 2. UNDERSTAND THEIR INTENT:
-- If BUY: "Excellent! What area are you interested in?"
-- If RENT: "Perfect! What area are you looking at?"
+1. GREETING: "Hey! This is Arnold from Petrona - we help people find amazing homes to buy or rent. What are you looking for today?"
 
-### 3. UNDERSTAND THEIR NEEDS:
-Ask ONE question at a time:
-- "How many bedrooms do you need?"
-- "What's your budget range?"
-- "Any specific features you're looking for?"
+2. WHEN THEY SAY RENT: "Awesome! Rentals are hot right now. What area you thinking?"
 
-### 4. SUGGEST MATCHING PROPERTIES:
-Pick ONE property that matches. Be enthusiastic but brief!
+3. WHEN THEY SAY BUY: "Love it - great investment! What neighborhood catches your eye?"
 
-### 5. PUSH FOR PROPERTY VISIT:
-"Would you like to see it in person?"
+4. AFTER AREA: "Got it! And how many bedrooms you need?"
 
-### 6. SCHEDULE THE VISIT:
-"Perfect! What day works best for you?"
+5. SUGGEST PROPERTY: "Oh perfect - I've got a [X]BR in [City] for [price]. [One exciting detail]. You're gonna love it!"
+
+6. PUSH FOR VISIT: "Want me to get you in there this week? I can show you Saturday if that works?"
+
+7. CLOSE IT: "Done! I've got you down for Saturday. I'll text you the address. This is gonna be good!"
 
 ## AVAILABLE PROPERTIES:
 
@@ -175,11 +168,12 @@ ${rentalsText}
 ### FOR PURCHASE:
 ${forSaleText}
 
-## VOICE RULES:
-- Keep responses SHORT (1-2 sentences max)
-- Speak SLOWLY and naturally
-- WAIT for caller to finish before responding
-- Sound calm and professional`;
+## RULES:
+- RESPOND FAST - quick short answers
+- Be the guy everyone wants to work with
+- Sound EXCITED about your properties
+- ALWAYS push toward booking a visit
+- Make them feel like they're getting VIP treatment`;
 }
 
 // Health check endpoint
@@ -187,7 +181,7 @@ app.get('/', async (req, res) => {
   const properties = await getPropertiesFromSheet();
   res.json({ 
     status: 'Petrona Voice AI is running!',
-    message: 'Arnold is ready to help with buying and renting homes.',
+    message: 'Arnold the Deal Closer is ready!',
     properties: {
       rentals: properties.rentals.length,
       forSale: properties.forSale.length
@@ -212,7 +206,6 @@ app.post('/incoming-call', (req, res) => {
   res.send(twimlResponse);
 });
 
-// Also handle GET for testing
 app.get('/incoming-call', (req, res) => {
   res.json({ message: 'This endpoint expects POST from Twilio' });
 });
@@ -223,14 +216,12 @@ const wss = new WebSocket.Server({ server, path: '/media-stream' });
 wss.on('connection', async (twilioWs, req) => {
   console.log('🔗 Twilio WebSocket connected');
   
-  // Build fresh system prompt with latest properties
   const SYSTEM_PROMPT = await buildSystemPrompt();
   
   let openaiWs = null;
   let streamSid = null;
   let callSid = null;
 
-  // Connect to OpenAI Realtime API
   const connectToOpenAI = () => {
     try {
       openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17', {
@@ -243,29 +234,28 @@ wss.on('connection', async (twilioWs, req) => {
       openaiWs.on('open', () => {
         console.log('🤖 Connected to OpenAI Realtime API');
         
-        // Configure the session with IMPROVED settings
+        // FAST RESPONSE SETTINGS
         const sessionConfig = {
           type: 'session.update',
           session: {
             turn_detection: { 
               type: 'server_vad',
-              threshold: 0.6,           // Higher = needs louder speech to detect (less sensitive)
-              prefix_padding_ms: 500,   // More padding before speech
-              silence_duration_ms: 1000 // Wait 1 second of silence before responding
+              threshold: 0.5,            // More responsive
+              prefix_padding_ms: 200,    // Less padding
+              silence_duration_ms: 300   // Only 300ms wait - FAST!
             },
             input_audio_format: 'g711_ulaw',
             output_audio_format: 'g711_ulaw',
-            voice: 'echo',  // Deeper, mature male voice
+            voice: 'echo',  // Mature confident male voice
             instructions: SYSTEM_PROMPT,
             modalities: ['text', 'audio'],
-            temperature: 0.7
+            temperature: 0.8  // Slightly more creative/natural
           }
         };
         
         openaiWs.send(JSON.stringify(sessionConfig));
-        console.log('⚙️ Session configured with mature voice + Google Sheets data');
+        console.log('⚙️ Session configured - FAST DEAL CLOSER MODE');
 
-        // Send initial greeting prompt
         setTimeout(() => {
           const initialMessage = {
             type: 'conversation.item.create',
@@ -275,14 +265,14 @@ wss.on('connection', async (twilioWs, req) => {
               content: [
                 {
                   type: 'input_text',
-                  text: 'A caller just connected. Give your warm greeting as Arnold from Petrona. Speak slowly and clearly.'
+                  text: 'A caller just connected. Give your energetic, confident greeting as Arnold the deal closer from Petrona. Be warm and excited!'
                 }
               ]
             }
           };
           openaiWs.send(JSON.stringify(initialMessage));
           openaiWs.send(JSON.stringify({ type: 'response.create' }));
-        }, 500);
+        }, 300);
       });
 
       openaiWs.on('message', (data) => {
@@ -324,7 +314,6 @@ wss.on('connection', async (twilioWs, req) => {
     }
   };
 
-  // Handle messages from Twilio
   twilioWs.on('message', (message) => {
     try {
       const data = JSON.parse(message.toString());
@@ -377,22 +366,20 @@ wss.on('connection', async (twilioWs, req) => {
 // Start the server
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('');
-  console.log('🏠 ================================');
-  console.log('   PETRONA VOICE AI SERVER');
+  console.log('🔥 ================================');
+  console.log('   PETRONA VOICE AI - DEAL CLOSER');
   console.log(`   Running on port ${PORT}`);
   console.log('');
-  console.log('   Arnold is ready to help!');
-  console.log('   Voice: Echo (mature male)');
-  console.log('   Data: Google Sheets');
-  console.log('================================ 🏠');
+  console.log('   Arnold is ready to CLOSE DEALS!');
+  console.log('   Voice: Echo (confident male)');
+  console.log('   Response: 300ms (FAST!)');
+  console.log('================================ 🔥');
   console.log('');
   
-  // Test Google Sheets connection
   const properties = await getPropertiesFromSheet();
   console.log(`📊 Loaded ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
 });
 
-// Handle process errors
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
 });
