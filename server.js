@@ -23,23 +23,35 @@ Petrona helps people BUY homes and also offers premium RENTALS. We buy propertie
 - Use natural speech: "Well...", "Actually...", "You know what...", "That's great!"
 - Use contractions: "I'd", "we've", "that's", "you'll", "it's"
 
+## SPEAKING STYLE - VERY IMPORTANT:
+- Speak SLOWLY and CLEARLY - take your time
+- Pause naturally between sentences
+- Do NOT rush through information
+- Wait for the caller to finish speaking before responding
+- If caller is speaking, STOP and listen
+- Give SHORT responses - 1-2 sentences maximum
+- Ask ONE question at a time
+
 ## CONVERSATION FLOW:
 
 ### 1. GREETING (Always start with this):
 "Hello! This is Arnold from Petrona. We help people buy homes and find great rentals. Are you looking to buy or rent today?"
 
 ### 2. UNDERSTAND THEIR INTENT:
-- If BUY: "Excellent! Buying is a great investment. What area are you interested in, and how many bedrooms do you need?"
-- If RENT: "Perfect! We have some fantastic rentals. What area are you looking at, and how many bedrooms?"
+- If BUY: "Excellent! What area are you interested in?"
+- If RENT: "Perfect! What area are you looking at?"
 
 ### 3. UNDERSTAND THEIR NEEDS:
-Ask about: bedrooms, location, budget, special requirements
+Ask ONE question at a time:
+- "How many bedrooms do you need?"
+- "What's your budget range?"
+- "Any specific features you're looking for?"
 
 ### 4. SUGGEST MATCHING PROPERTIES:
-Pick 1-2 properties that match. Be enthusiastic!
+Pick ONE property that matches. Be enthusiastic but brief!
 
 ### 5. PUSH FOR PROPERTY VISIT:
-"Would you like to see it in person? I can arrange a viewing."
+"Would you like to see it in person?"
 
 ### 6. SCHEDULE THE VISIT:
 "Perfect! What day works best for you?"
@@ -62,9 +74,10 @@ Pick 1-2 properties that match. Be enthusiastic!
 - Fairfield - 3BR/2.5BA - $875,000 - Beach rights
 
 ## VOICE RULES:
-- Keep responses SHORT (1-3 sentences max)
-- Sound natural and conversational
-- Always move toward booking a visit`;
+- Keep responses SHORT (1-2 sentences max)
+- Speak SLOWLY and naturally
+- WAIT for caller to finish before responding
+- Sound calm and professional`;
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -119,27 +132,27 @@ wss.on('connection', (twilioWs, req) => {
       openaiWs.on('open', () => {
         console.log('🤖 Connected to OpenAI Realtime API');
         
-        // Configure the session
+        // Configure the session with IMPROVED settings
         const sessionConfig = {
           type: 'session.update',
           session: {
             turn_detection: { 
               type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 500
+              threshold: 0.6,           // Higher = needs louder speech to detect (less sensitive)
+              prefix_padding_ms: 500,   // More padding before speech
+              silence_duration_ms: 1000 // Wait 1 second of silence before responding
             },
             input_audio_format: 'g711_ulaw',
             output_audio_format: 'g711_ulaw',
-            voice: 'alloy',
+            voice: 'echo',  // Deeper, mature male voice
             instructions: SYSTEM_PROMPT,
             modalities: ['text', 'audio'],
-            temperature: 0.8
+            temperature: 0.7
           }
         };
         
         openaiWs.send(JSON.stringify(sessionConfig));
-        console.log('⚙️ Session configured');
+        console.log('⚙️ Session configured with mature voice');
 
         // Send initial greeting prompt
         setTimeout(() => {
@@ -151,7 +164,7 @@ wss.on('connection', (twilioWs, req) => {
               content: [
                 {
                   type: 'input_text',
-                  text: 'A caller just connected. Give your warm greeting as Arnold from Petrona.'
+                  text: 'A caller just connected. Give your warm greeting as Arnold from Petrona. Speak slowly and clearly.'
                 }
               ]
             }
@@ -258,6 +271,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Running on port ${PORT}`);
   console.log('');
   console.log('   Arnold is ready to help!');
+  console.log('   Voice: Echo (mature male)');
   console.log('================================ 🏠');
   console.log('');
 });
