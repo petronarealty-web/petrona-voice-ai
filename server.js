@@ -7,7 +7,7 @@ const server = http.createServer(app);
 
 // Environment variables
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // System prompt for Arnold - World Class Real Estate Expert
 const SYSTEM_PROMPT = `You are Arnold, a world-class real estate business development expert at Petrona.
@@ -33,92 +33,57 @@ Petrona helps people BUY homes and also offers premium RENTALS. We buy propertie
 - If RENT: "Perfect! We have some fantastic rentals. What area are you looking at, and how many bedrooms?"
 
 ### 3. UNDERSTAND THEIR NEEDS:
-Ask about:
-- Number of bedrooms
-- Preferred location/area
-- Budget range
-- Any special requirements (pool, parking, pet-friendly, etc.)
+Ask about: bedrooms, location, budget, special requirements
 
 ### 4. SUGGEST MATCHING PROPERTIES:
-Pick 1-2 properties that match their needs. Be enthusiastic!
+Pick 1-2 properties that match. Be enthusiastic!
 
-### 5. CREATE INTEREST:
-- "This one's been getting a lot of attention lately"
-- "The view from this place is incredible"
-- "This is actually one of my favorites"
+### 5. PUSH FOR PROPERTY VISIT:
+"Would you like to see it in person? I can arrange a viewing."
 
-### 6. PUSH FOR PROPERTY VISIT:
-- "Would you like to see it in person? I can arrange a viewing."
-- "I could show you this one as early as tomorrow if you're interested."
-- "Want me to set up a time for you to check it out?"
-
-### 7. SCHEDULE THE VISIT:
-- "Perfect! What day works best for you?"
-- "Great! Morning or afternoon?"
-- "Excellent! I've got you down for [day/time]. I'll send you the address and see you there!"
+### 6. SCHEDULE THE VISIT:
+"Perfect! What day works best for you?"
 
 ## AVAILABLE PROPERTIES:
 
 ### FOR RENT:
-1. Stamford - 3BR/2BA - $2,800/month
-   Modern apartment, pool, gym, downtown location
-   
-2. Greenwich - 4BR/3BA - $4,200/month
-   Luxury home, waterfront views, private dock
-   
-3. Westport - 2BR/2BA - $2,200/month
-   Cozy apartment, 5 minutes to beach, renovated
-   
-4. Norwalk - 2BR/1BA - $1,800/month
-   Affordable, great starter, near shopping
-   
-5. Fairfield - 3BR/2BA - $2,500/month
-   Family-friendly neighborhood, good schools, backyard
-   
-6. Darien - 3BR/2.5BA - $3,200/month
-   Near Metro-North, easy NYC commute, modern finishes
+- Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym
+- Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront
+- Westport - 2BR/2BA - $2,200/month - Cozy, near beach
+- Norwalk - 2BR/1BA - $1,800/month - Affordable starter
+- Fairfield - 3BR/2BA - $2,500/month - Family neighborhood
+- Darien - 3BR/2.5BA - $3,200/month - Near train, NYC commute
 
 ### FOR PURCHASE:
-1. Stamford - 3BR/2BA - $750,000
-   Fully renovated, downtown, walkable to restaurants
-   
-2. Greenwich - 4BR/3.5BA - $1,250,000
-   Waterfront estate, stunning views, private
-   
-3. Westport - 5BR/4BA - $1,850,000
-   Private beach access, luxury finishes, pool
-   
-4. Norwalk - 2BR/2BA - $550,000
-   Perfect starter home, move-in ready, quiet street
-   
-5. Fairfield - 3BR/2.5BA - $875,000
-   Beach rights included, updated kitchen, garage
+- Stamford - 3BR/2BA - $750,000 - Renovated downtown
+- Greenwich - 4BR/3.5BA - $1,250,000 - Waterfront estate
+- Westport - 5BR/4BA - $1,850,000 - Beach access, pool
+- Norwalk - 2BR/2BA - $550,000 - Perfect starter
+- Fairfield - 3BR/2.5BA - $875,000 - Beach rights
 
 ## VOICE RULES:
 - Keep responses SHORT (1-3 sentences max)
 - Sound natural and conversational
-- Don't list multiple properties at once - suggest one, gauge interest
-- Always move the conversation toward booking a visit
-- If they seem hesitant, address concerns warmly
-- If they say goodbye or thank you, end gracefully
+- Always move toward booking a visit`;
 
-## HANDLING OBJECTIONS:
-- "Too expensive": "I totally understand. Let me suggest something in a better range for you..."
-- "Just looking": "No pressure at all! But if you'd like to see any of these in person, I'm happy to arrange it whenever you're ready."
-- "Need to think": "Of course! Take your time. Would you like me to send you some details to review?"
-
-## ENDING THE CALL:
-- "Thanks so much for calling Petrona! I'm excited to help you find your perfect place. Talk soon!"
-- "Great chatting with you! Looking forward to showing you the property. Have a wonderful day!"`;
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'Petrona Voice AI is running!',
+    message: 'Arnold is ready to help with buying and renting homes.',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Handle Twilio webhook for incoming calls
-app.all('/incoming-call', (req, res) => {
+app.post('/incoming-call', (req, res) => {
   console.log('📞 Incoming call received');
   
+  const host = req.headers.host;
   const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://${req.headers.host}/media-stream" />
+    <Stream url="wss://${host}/media-stream" />
   </Connect>
 </Response>`;
 
@@ -126,18 +91,15 @@ app.all('/incoming-call', (req, res) => {
   res.send(twimlResponse);
 });
 
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'Petrona Voice AI is running! 🏠',
-    message: 'Arnold is ready to help with buying and renting homes.'
-  });
+// Also handle GET for testing
+app.get('/incoming-call', (req, res) => {
+  res.json({ message: 'This endpoint expects POST from Twilio' });
 });
 
 // WebSocket server for Twilio Media Streams
 const wss = new WebSocket.Server({ server, path: '/media-stream' });
 
-wss.on('connection', (twilioWs) => {
+wss.on('connection', (twilioWs, req) => {
   console.log('🔗 Twilio WebSocket connected');
   
   let openaiWs = null;
@@ -146,101 +108,96 @@ wss.on('connection', (twilioWs) => {
 
   // Connect to OpenAI Realtime API
   const connectToOpenAI = () => {
-    openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17', {
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1'
-      }
-    });
-
-    openaiWs.on('open', () => {
-      console.log('🤖 Connected to OpenAI Realtime API');
-      
-      // Configure the session
-      const sessionConfig = {
-        type: 'session.update',
-        session: {
-          turn_detection: { 
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500
-          },
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          voice: 'alloy', // OpenAI's natural voice
-          instructions: SYSTEM_PROMPT,
-          modalities: ['text', 'audio'],
-          temperature: 0.8
+    try {
+      openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17', {
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'realtime=v1'
         }
-      };
-      
-      openaiWs.send(JSON.stringify(sessionConfig));
-      console.log('⚙️ Session configured');
+      });
 
-      // Send initial greeting prompt
-      setTimeout(() => {
-        const initialMessage = {
-          type: 'conversation.item.create',
-          item: {
-            type: 'message',
-            role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text: 'A caller just connected. Give your warm greeting as Arnold from Petrona.'
-              }
-            ]
+      openaiWs.on('open', () => {
+        console.log('🤖 Connected to OpenAI Realtime API');
+        
+        // Configure the session
+        const sessionConfig = {
+          type: 'session.update',
+          session: {
+            turn_detection: { 
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 500
+            },
+            input_audio_format: 'g711_ulaw',
+            output_audio_format: 'g711_ulaw',
+            voice: 'alloy',
+            instructions: SYSTEM_PROMPT,
+            modalities: ['text', 'audio'],
+            temperature: 0.8
           }
         };
-        openaiWs.send(JSON.stringify(initialMessage));
         
-        // Trigger response
-        openaiWs.send(JSON.stringify({ type: 'response.create' }));
-      }, 500);
-    });
+        openaiWs.send(JSON.stringify(sessionConfig));
+        console.log('⚙️ Session configured');
 
-    openaiWs.on('message', (data) => {
-      try {
-        const event = JSON.parse(data.toString());
-        
-        // Handle audio response from OpenAI
-        if (event.type === 'response.audio.delta' && event.delta) {
-          const audioData = {
-            event: 'media',
-            streamSid: streamSid,
-            media: {
-              payload: event.delta
+        // Send initial greeting prompt
+        setTimeout(() => {
+          const initialMessage = {
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text: 'A caller just connected. Give your warm greeting as Arnold from Petrona.'
+                }
+              ]
             }
           };
-          twilioWs.send(JSON.stringify(audioData));
+          openaiWs.send(JSON.stringify(initialMessage));
+          openaiWs.send(JSON.stringify({ type: 'response.create' }));
+        }, 500);
+      });
+
+      openaiWs.on('message', (data) => {
+        try {
+          const event = JSON.parse(data.toString());
+          
+          if (event.type === 'response.audio.delta' && event.delta) {
+            const audioData = {
+              event: 'media',
+              streamSid: streamSid,
+              media: {
+                payload: event.delta
+              }
+            };
+            if (twilioWs.readyState === WebSocket.OPEN) {
+              twilioWs.send(JSON.stringify(audioData));
+            }
+          }
+
+          if (event.type === 'error') {
+            console.error('❌ OpenAI Error:', event.error);
+          }
+
+        } catch (error) {
+          console.error('Error parsing OpenAI message:', error);
         }
+      });
 
-        // Log conversation events
-        if (event.type === 'conversation.item.created') {
-          console.log('💬 Conversation item created');
-        }
+      openaiWs.on('error', (error) => {
+        console.error('❌ OpenAI WebSocket error:', error.message);
+      });
 
-        if (event.type === 'response.done') {
-          console.log('✅ Response complete');
-        }
+      openaiWs.on('close', (code, reason) => {
+        console.log('🔌 OpenAI WebSocket closed:', code, reason?.toString());
+      });
 
-        if (event.type === 'error') {
-          console.error('❌ OpenAI Error:', event.error);
-        }
-
-      } catch (error) {
-        console.error('Error parsing OpenAI message:', error);
-      }
-    });
-
-    openaiWs.on('error', (error) => {
-      console.error('❌ OpenAI WebSocket error:', error);
-    });
-
-    openaiWs.on('close', () => {
-      console.log('🔌 OpenAI WebSocket closed');
-    });
+    } catch (error) {
+      console.error('Failed to connect to OpenAI:', error);
+    }
   };
 
   // Handle messages from Twilio
@@ -252,12 +209,11 @@ wss.on('connection', (twilioWs) => {
         case 'start':
           streamSid = data.start.streamSid;
           callSid = data.start.callSid;
-          console.log(`📞 Call started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
+          console.log(`📞 Call started - StreamSid: ${streamSid}`);
           connectToOpenAI();
           break;
 
         case 'media':
-          // Forward audio from Twilio to OpenAI
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
             const audioEvent = {
               type: 'input_audio_buffer.append',
@@ -269,7 +225,7 @@ wss.on('connection', (twilioWs) => {
 
         case 'stop':
           console.log('📞 Call ended');
-          if (openaiWs) {
+          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
             openaiWs.close();
           }
           break;
@@ -284,24 +240,33 @@ wss.on('connection', (twilioWs) => {
 
   twilioWs.on('close', () => {
     console.log('🔌 Twilio WebSocket closed');
-    if (openaiWs) {
+    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     }
   });
 
   twilioWs.on('error', (error) => {
-    console.error('❌ Twilio WebSocket error:', error);
+    console.error('❌ Twilio WebSocket error:', error.message);
   });
 });
 
 // Start the server
-server.listen(PORT, () => {
-  console.log(`
-🏠 ================================
-   PETRONA VOICE AI SERVER
-   Running on port ${PORT}
-   
-   Arnold is ready to help!
-================================ 🏠
-  `);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('');
+  console.log('🏠 ================================');
+  console.log('   PETRONA VOICE AI SERVER');
+  console.log(`   Running on port ${PORT}`);
+  console.log('');
+  console.log('   Arnold is ready to help!');
+  console.log('================================ 🏠');
+  console.log('');
+});
+
+// Handle process errors
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
 });
