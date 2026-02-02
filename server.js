@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const { google } = require('googleapis');
 
 const app = express();
 const server = http.createServer(app);
@@ -8,9 +9,119 @@ const server = http.createServer(app);
 // Environment variables
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 8080;
+const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS;
+const SPREADSHEET_ID = '1HC91zPEdEzUq1rajAhQbzcwSgOnQSOULYaM9LYlvhb4';
 
-// System prompt for Arnold - World Class Real Estate Expert
-const SYSTEM_PROMPT = `You are Arnold, a world-class real estate business development expert at Petrona.
+// Cache for properties
+let cachedProperties = null;
+let lastFetch = 0;
+const CACHE_DURATION = 60000; // Refresh every 1 minute
+
+// Fetch properties from Google Sheets
+async function getPropertiesFromSheet() {
+  const now = Date.now();
+  
+  // Return cached data if still valid
+  if (cachedProperties && (now - lastFetch) < CACHE_DURATION) {
+    return cachedProperties;
+  }
+
+  try {
+    if (!GOOGLE_CREDENTIALS) {
+      console.log('No Google credentials, using default properties');
+      return getDefaultProperties();
+    }
+
+    const credentials = JSON.parse(GOOGLE_CREDENTIALS);
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    
+    // Try to read from "Properties" sheet
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Properties!A2:H100', // Skip header row
+    });
+
+    const rows = response.data.values || [];
+    
+    if (rows.length === 0) {
+      console.log('No data in sheet, using defaults');
+      return getDefaultProperties();
+    }
+
+    // Parse properties from sheet
+    // Expected columns: Type, Address, City, Beds, Baths, Price, Features, Status
+    const rentals = [];
+    const forSale = [];
+
+    rows.forEach(row => {
+      const property = {
+        type: row[0] || '',
+        address: row[1] || '',
+        city: row[2] || '',
+        beds: row[3] || '',
+        baths: row[4] || '',
+        price: row[5] || '',
+        features: row[6] || '',
+        status: row[7] || 'Available'
+      };
+
+      if (property.status.toLowerCase() === 'available') {
+        const listing = `${property.city} - ${property.beds}BR/${property.baths}BA - ${property.price} - ${property.features}`;
+        
+        if (property.type.toLowerCase() === 'rent') {
+          rentals.push(listing);
+        } else if (property.type.toLowerCase() === 'buy' || property.type.toLowerCase() === 'sale') {
+          forSale.push(listing);
+        }
+      }
+    });
+
+    cachedProperties = { rentals, forSale };
+    lastFetch = now;
+    
+    console.log(`Loaded ${rentals.length} rentals and ${forSale.length} for-sale from Google Sheets`);
+    return cachedProperties;
+
+  } catch (error) {
+    console.error('Error fetching from Google Sheets:', error.message);
+    return getDefaultProperties();
+  }
+}
+
+// Default properties if Google Sheets fails
+function getDefaultProperties() {
+  return {
+    rentals: [
+      'Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym',
+      'Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront',
+      'Westport - 2BR/2BA - $2,200/month - Cozy, near beach',
+      'Norwalk - 2BR/1BA - $1,800/month - Affordable starter',
+      'Fairfield - 3BR/2BA - $2,500/month - Family neighborhood',
+      'Darien - 3BR/2.5BA - $3,200/month - Near train, NYC commute'
+    ],
+    forSale: [
+      'Stamford - 3BR/2BA - $750,000 - Renovated downtown',
+      'Greenwich - 4BR/3.5BA - $1,250,000 - Waterfront estate',
+      'Westport - 5BR/4BA - $1,850,000 - Beach access, pool',
+      'Norwalk - 2BR/2BA - $550,000 - Perfect starter',
+      'Fairfield - 3BR/2.5BA - $875,000 - Beach rights'
+    ]
+  };
+}
+
+// Build system prompt with current properties
+async function buildSystemPrompt() {
+  const properties = await getPropertiesFromSheet();
+  
+  const rentalsText = properties.rentals.map(p => `- ${p}`).join('\n');
+  const forSaleText = properties.forSale.map(p => `- ${p}`).join('\n');
+
+  return `You are Arnold, a world-class real estate business development expert at Petrona.
 
 ## ABOUT PETRONA:
 Petrona helps people BUY homes and also offers premium RENTALS. We buy properties and rent them out, and we also help clients purchase their dream homes.
@@ -59,31 +170,28 @@ Pick ONE property that matches. Be enthusiastic but brief!
 ## AVAILABLE PROPERTIES:
 
 ### FOR RENT:
-- Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym
-- Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront
-- Westport - 2BR/2BA - $2,200/month - Cozy, near beach
-- Norwalk - 2BR/1BA - $1,800/month - Affordable starter
-- Fairfield - 3BR/2BA - $2,500/month - Family neighborhood
-- Darien - 3BR/2.5BA - $3,200/month - Near train, NYC commute
+${rentalsText}
 
 ### FOR PURCHASE:
-- Stamford - 3BR/2BA - $750,000 - Renovated downtown
-- Greenwich - 4BR/3.5BA - $1,250,000 - Waterfront estate
-- Westport - 5BR/4BA - $1,850,000 - Beach access, pool
-- Norwalk - 2BR/2BA - $550,000 - Perfect starter
-- Fairfield - 3BR/2.5BA - $875,000 - Beach rights
+${forSaleText}
 
 ## VOICE RULES:
 - Keep responses SHORT (1-2 sentences max)
 - Speak SLOWLY and naturally
 - WAIT for caller to finish before responding
 - Sound calm and professional`;
+}
 
 // Health check endpoint
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  const properties = await getPropertiesFromSheet();
   res.json({ 
     status: 'Petrona Voice AI is running!',
     message: 'Arnold is ready to help with buying and renting homes.',
+    properties: {
+      rentals: properties.rentals.length,
+      forSale: properties.forSale.length
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -112,8 +220,11 @@ app.get('/incoming-call', (req, res) => {
 // WebSocket server for Twilio Media Streams
 const wss = new WebSocket.Server({ server, path: '/media-stream' });
 
-wss.on('connection', (twilioWs, req) => {
+wss.on('connection', async (twilioWs, req) => {
   console.log('🔗 Twilio WebSocket connected');
+  
+  // Build fresh system prompt with latest properties
+  const SYSTEM_PROMPT = await buildSystemPrompt();
   
   let openaiWs = null;
   let streamSid = null;
@@ -152,7 +263,7 @@ wss.on('connection', (twilioWs, req) => {
         };
         
         openaiWs.send(JSON.stringify(sessionConfig));
-        console.log('⚙️ Session configured with mature voice');
+        console.log('⚙️ Session configured with mature voice + Google Sheets data');
 
         // Send initial greeting prompt
         setTimeout(() => {
@@ -264,7 +375,7 @@ wss.on('connection', (twilioWs, req) => {
 });
 
 // Start the server
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log('');
   console.log('🏠 ================================');
   console.log('   PETRONA VOICE AI SERVER');
@@ -272,8 +383,13 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('   Arnold is ready to help!');
   console.log('   Voice: Echo (mature male)');
+  console.log('   Data: Google Sheets');
   console.log('================================ 🏠');
   console.log('');
+  
+  // Test Google Sheets connection
+  const properties = await getPropertiesFromSheet();
+  console.log(`📊 Loaded ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
 });
 
 // Handle process errors
