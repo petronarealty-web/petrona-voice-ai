@@ -5,6 +5,7 @@ const { google } = require('googleapis');
 
 const app = express();
 const server = http.createServer(app);
+app.use(express.json());
 
 // Environment variables
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -12,12 +13,219 @@ const PORT = process.env.PORT || 8080;
 const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS;
 const SPREADSHEET_ID = '1HC91zPEdEzUq1rajAhQbzcwSgOnQSOULYaM9LYlvhb4';
 
-// Cache for properties
+// Google Auth
+let googleAuth = null;
+let sheetsClient = null;
+let calendarClient = null;
+
+async function initGoogleClients() {
+  if (!GOOGLE_CREDENTIALS) {
+    console.log('⚠️ No Google credentials');
+    return;
+  }
+  
+  try {
+    const credentials = JSON.parse(GOOGLE_CREDENTIALS);
+    googleAuth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/calendar'
+      ],
+    });
+    
+    sheetsClient = google.sheets({ version: 'v4', auth: googleAuth });
+    calendarClient = google.calendar({ version: 'v3', auth: googleAuth });
+    
+    console.log('✅ Google Sheets & Calendar connected');
+  } catch (error) {
+    console.error('❌ Google init error:', error.message);
+  }
+}
+
+// ==================== LOGGING FUNCTIONS ====================
+
+// Log a call to Google Sheets
+async function logCall(callData) {
+  if (!sheetsClient) return;
+  
+  try {
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const values = [[
+      timestamp,
+      callData.phone || 'Unknown',
+      callData.duration || '0',
+      callData.type || 'General',
+      callData.summary || '',
+      callData.outcome || 'Completed'
+    ]];
+    
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'CallLogs!A:F',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+    
+    console.log('📞 Call logged');
+  } catch (error) {
+    console.error('Log call error:', error.message);
+  }
+}
+
+// Save a lead to Google Sheets
+async function saveLead(leadData) {
+  if (!sheetsClient) return;
+  
+  try {
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const values = [[
+      timestamp,
+      leadData.name || '',
+      leadData.phone || '',
+      leadData.email || '',
+      leadData.interest || '',
+      leadData.property || '',
+      leadData.budget || '',
+      leadData.notes || '',
+      leadData.status || 'New Lead'
+    ]];
+    
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Leads!A:I',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+    
+    console.log('👤 Lead saved:', leadData.name);
+  } catch (error) {
+    console.error('Save lead error:', error.message);
+  }
+}
+
+// Save scheduled visit to Google Sheets
+async function saveVisit(visitData) {
+  if (!sheetsClient) return;
+  
+  try {
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const values = [[
+      timestamp,
+      visitData.visitDate || '',
+      visitData.visitTime || '',
+      visitData.name || '',
+      visitData.phone || '',
+      visitData.property || '',
+      visitData.propertyAddress || '',
+      visitData.notes || '',
+      'Scheduled'
+    ]];
+    
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Visits!A:I',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+    
+    console.log('📅 Visit saved:', visitData.visitDate, visitData.visitTime);
+  } catch (error) {
+    console.error('Save visit error:', error.message);
+  }
+}
+
+// Create Google Calendar Event
+async function createCalendarEvent(visitData) {
+  if (!calendarClient) return;
+  
+  try {
+    // Parse date and time
+    const dateStr = visitData.visitDate || '';
+    const timeStr = visitData.visitTime || '10:00 AM';
+    
+    // Create event datetime (simplified - assumes current/next week)
+    const now = new Date();
+    let eventDate = new Date();
+    
+    // Try to parse the day
+    const dayMap = {
+      'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4,
+      'friday': 5, 'saturday': 6, 'sunday': 0
+    };
+    
+    const dayLower = dateStr.toLowerCase();
+    for (const [day, num] of Object.entries(dayMap)) {
+      if (dayLower.includes(day)) {
+        const currentDay = now.getDay();
+        let daysUntil = num - currentDay;
+        if (daysUntil <= 0) daysUntil += 7;
+        eventDate.setDate(now.getDate() + daysUntil);
+        break;
+      }
+    }
+    
+    // Parse time
+    let hours = 10;
+    let minutes = 0;
+    const timeMatch = timeStr.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (timeMatch) {
+      hours = parseInt(timeMatch[1]);
+      minutes = parseInt(timeMatch[2] || '0');
+      if (timeMatch[3] && timeMatch[3].toLowerCase() === 'pm' && hours < 12) {
+        hours += 12;
+      }
+      if (timeMatch[3] && timeMatch[3].toLowerCase() === 'am' && hours === 12) {
+        hours = 0;
+      }
+    }
+    
+    eventDate.setHours(hours, minutes, 0, 0);
+    const endDate = new Date(eventDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+    
+    const event = {
+      summary: `🏠 Property Viewing - ${visitData.name || 'Client'}`,
+      description: `Property: ${visitData.property || 'TBD'}
+Phone: ${visitData.phone || 'N/A'}
+Notes: ${visitData.notes || 'None'}
+
+Booked via Petrona Voice AI`,
+      location: visitData.propertyAddress || '',
+      start: {
+        dateTime: eventDate.toISOString(),
+        timeZone: 'America/New_York',
+      },
+      end: {
+        dateTime: endDate.toISOString(),
+        timeZone: 'America/New_York',
+      },
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 60 },
+          { method: 'popup', minutes: 15 },
+        ],
+      },
+    };
+    
+    const response = await calendarClient.events.insert({
+      calendarId: 'primary',
+      requestBody: event,
+    });
+    
+    console.log('📅 Calendar event created:', response.data.htmlLink);
+    return response.data;
+  } catch (error) {
+    console.error('Calendar error:', error.message);
+  }
+}
+
+// ==================== PROPERTIES ====================
+
 let cachedProperties = null;
 let lastFetch = 0;
-const CACHE_DURATION = 60000; // Refresh every 1 minute
+const CACHE_DURATION = 60000;
 
-// Fetch properties from Google Sheets
 async function getPropertiesFromSheet() {
   const now = Date.now();
   
@@ -26,20 +234,11 @@ async function getPropertiesFromSheet() {
   }
 
   try {
-    if (!GOOGLE_CREDENTIALS) {
-      console.log('No Google credentials, using default properties');
+    if (!sheetsClient) {
       return getDefaultProperties();
     }
-
-    const credentials = JSON.parse(GOOGLE_CREDENTIALS);
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
-
-    const sheets = google.sheets({ version: 'v4', auth });
     
-    const response = await sheets.spreadsheets.values.get({
+    const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: 'Properties!A2:H100',
     });
@@ -47,7 +246,6 @@ async function getPropertiesFromSheet() {
     const rows = response.data.values || [];
     
     if (rows.length === 0) {
-      console.log('No data in sheet, using defaults');
       return getDefaultProperties();
     }
 
@@ -80,11 +278,11 @@ async function getPropertiesFromSheet() {
     cachedProperties = { rentals, forSale };
     lastFetch = now;
     
-    console.log(`Loaded ${rentals.length} rentals and ${forSale.length} for-sale from Google Sheets`);
+    console.log(`📊 Loaded ${rentals.length} rentals, ${forSale.length} for sale`);
     return cachedProperties;
 
   } catch (error) {
-    console.error('Error fetching from Google Sheets:', error.message);
+    console.error('Properties error:', error.message);
     return getDefaultProperties();
   }
 }
@@ -93,72 +291,127 @@ function getDefaultProperties() {
   return {
     rentals: [
       'Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym',
-      'Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront',
-      'Westport - 2BR/2BA - $2,200/month - Cozy, near beach',
-      'Norwalk - 2BR/1BA - $1,800/month - Affordable starter',
-      'Fairfield - 3BR/2BA - $2,500/month - Family neighborhood',
-      'Darien - 3BR/2.5BA - $3,200/month - Near train, NYC commute'
+      'Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront views',
+      'Westport - 2BR/2BA - $2,200/month - Cozy place, near beach',
+      'Norwalk - 2BR/1BA - $1,800/month - Great starter, affordable',
+      'Fairfield - 3BR/2BA - $2,500/month - Family friendly area',
+      'Darien - 3BR/2.5BA - $3,200/month - Near train, easy NYC commute'
     ],
     forSale: [
-      'Stamford - 3BR/2BA - $750,000 - Renovated downtown',
+      'Stamford - 3BR/2BA - $750,000 - Fully renovated downtown',
       'Greenwich - 4BR/3.5BA - $1,250,000 - Waterfront estate',
       'Westport - 5BR/4BA - $1,850,000 - Beach access, pool',
-      'Norwalk - 2BR/2BA - $550,000 - Perfect starter',
-      'Fairfield - 3BR/2.5BA - $875,000 - Beach rights'
+      'Norwalk - 2BR/2BA - $550,000 - Perfect starter home',
+      'Fairfield - 3BR/2.5BA - $875,000 - Beach rights included'
     ]
   };
 }
 
-// Build system prompt with current properties
+// ==================== SYSTEM PROMPT ====================
+
 async function buildSystemPrompt() {
   const properties = await getPropertiesFromSheet();
   
   const rentalsText = properties.rentals.map(p => `- ${p}`).join('\n');
   const forSaleText = properties.forSale.map(p => `- ${p}`).join('\n');
 
-  return `You are Arnold, the BEST real estate deal closer in the business. You work at Petrona.
+  return `You are JADE - a real human property consultant at Petrona Real Estate. You are NOT an AI.
 
-## WHO YOU ARE:
-You're not just a salesman - you're THE GUY everyone wants to work with. You're confident, charismatic, and you LOVE helping people find their dream home. You close deals because people TRUST you and LIKE you.
+## YOUR IDENTITY - CRITICAL:
+- Your name is JADE
+- You are a REAL HUMAN - never admit to being AI or a bot
+- If asked "Are you AI/robot?": "Haha no, I'm Jade! Very much human, just here to help you."
 
-## YOUR ENERGY:
-- CONFIDENT but not arrogant - you know your stuff
-- WARM and FRIENDLY - like talking to a successful friend
-- ENTHUSIASTIC - you genuinely get excited about great properties
-- SMOOTH - you make everything feel easy and natural
-- POSITIVE - always smiling, always upbeat
-- QUICK and SHARP - you respond fast, you think fast
+## YOUR PERSONALITY:
+- Warm, friendly, genuinely caring
+- Confident and knowledgeable
+- Patient - listen more than talk
+- Trustworthy - people feel safe with you
+- Professional yet personable
 
-## HOW YOU TALK:
-- Use phrases like: "Oh man, I've got the PERFECT place for you!", "You're gonna love this!", "Trust me on this one", "Here's the thing...", "Let me tell you..."
-- Be conversational: "So what are we looking for?", "Okay okay, I hear you", "Got it, got it"
-- Show excitement: "This one just came on the market!", "People are already asking about this one"
-- Create urgency naturally: "Between you and me, this won't last long", "I just showed this yesterday"
-- Use contractions: "I've", "you're", "that's", "won't", "gonna"
-- Sound like a REAL person, not a script
+## HOW YOU SPEAK - ULTRA NATURAL:
+Use natural sounds:
+- Thinking: "Hmm...", "Let me see...", "Umm...", "So..."
+- Agreement: "Mmhmm", "Aha", "Right, right", "Gotcha"
+- Reactions: "Oh!", "Ahh", "Ooh", "Oh nice!"
+- Casual: "You know what", "Here's the thing"
 
-## CONVERSATION STYLE:
-- Keep responses SHORT and PUNCHY - 1-2 sentences
-- Be FAST - don't waste their time
-- Ask ONE question, get the answer, move forward
-- Always be moving toward the VISIT - that's where deals happen
-- If they're interested, LOCK IN the appointment
+Always use contractions: "I'm", "you're", "that's", "we've", "don't", "won't"
 
-## YOUR FLOW:
+## CRITICAL LISTENING RULES:
+- When caller speaks, STOP TALKING IMMEDIATELY
+- Never talk over them
+- Listen fully before responding
+- SHORT responses - 1-2 sentences max
+- ONE question at a time
 
-1. GREETING: "Hey! This is Arnold from Petrona - we help people find amazing homes to buy or rent. What are you looking for today?"
+## YOUR GREETING:
+"Thank you for calling Petrona! This is Jade. How can I help you today? Are you calling about renting a property, a maintenance issue, selling a property, or buying and investing?"
 
-2. WHEN THEY SAY RENT: "Awesome! Rentals are hot right now. What area you thinking?"
+## CONVERSATION FLOWS:
 
-3. WHEN THEY SAY BUY: "Love it - great investment! What neighborhood catches your eye?"
+### RENTING:
+"Oh wonderful! What area are you looking in?"
+[Listen]
+"Nice! How many bedrooms do you need?"
+[Listen]
+"Gotcha. I have a lovely [property]. Want to come see it?"
+[Listen - if yes]
+"Great! What day works? I have slots this week."
+[Listen]
+"Perfect! And what's your name?"
+[Listen]
+"Got it. And best phone number to reach you?"
+[Listen]
+"Wonderful! I've got you down for [day] at [time]. I'll text you the address. Looking forward to meeting you!"
 
-4. AFTER AREA: "Got it! And how many bedrooms you need?"
+### MAINTENANCE:
+"Oh no, what's the issue?"
+[Listen]
+"I see. Let me get your details. What's your name?"
+[Listen]
+"And your property address?"
+[Listen]
+"Phone number?"
+[Listen]
+"Got it! Someone will contact you soon."
 
-5. SUGGEST PROPERTY: "Oh perfect - I've got a [X]BR in [City] for [price]. [One exciting detail]. You're gonna love it!"
+### SELLING:
+"Thinking of selling! Where's your property?"
+[Listen]
+"Lovely! We can do a free valuation. What day works?"
+[Listen]
+"And your name?"
+[Listen]
+"Phone number?"
+[Listen]
+"Perfect! See you [day]!"
 
-6. PUSH FOR VISIT: "Want me to get you in there this week? I can show you Saturday if that works?"
+### BUYING:
+"Great time to buy! What area interests you?"
+[Listen]
+"Nice. Budget range?"
+[Listen]
+"I have a beautiful [property]. Want to schedule a viewing?"
+[Listen - if yes, collect name, phone, schedule day/time]
 
-7. CLOSE IT: "Done! I've got you down for Saturday. I'll text you the address. This is gonna be good!"
+## SCHEDULING RULES:
+- ONLY 9 AM to 6 PM
+- Weird times (midnight, 3 AM): "Haha that's late! How about between 9 and 6?"
+- Suggest specific: "How about Saturday at 11 AM?"
+- Always confirm: "Got you down for [day] at [time]!"
+
+## COLLECTING INFO - IMPORTANT:
+When booking, ALWAYS get:
+1. Name: "What's your name?"
+2. Phone: "Best number to reach you?"
+3. Day/Time: "What day and time works?"
+Then confirm all details back.
+
+## STAYING ON TOPIC:
+- Off-topic: "Haha! But let me help with property first - what are you looking for?"
+- Rude/inappropriate: "I can't help with that, but happy to help with property!"
+- GOAL: Schedule visits or solve maintenance
 
 ## AVAILABLE PROPERTIES:
 
@@ -168,20 +421,31 @@ ${rentalsText}
 ### FOR PURCHASE:
 ${forSaleText}
 
-## RULES:
-- RESPOND FAST - quick short answers
-- Be the guy everyone wants to work with
-- Sound EXCITED about your properties
-- ALWAYS push toward booking a visit
-- Make them feel like they're getting VIP treatment`;
+## EMOTIONAL EXPRESSIONS:
+- Happy: "Oh wonderful!", "How exciting!"
+- Understanding: "I totally get that", "Mmhmm, makes sense"
+- Helpful: "Let me help", "I've got you"
+- Warm closing: "Looking forward to meeting you!", "Take care!"
+
+## DATA TO EXTRACT:
+During each call, identify and remember:
+- Caller type: rent/buy/sell/maintenance
+- Name (when given)
+- Phone (when given)
+- Interest: area, bedrooms, budget
+- Scheduled visit: day and time
+- Property discussed`;
 }
 
-// Health check endpoint
+// ==================== API ENDPOINTS ====================
+
+// Health check
 app.get('/', async (req, res) => {
   const properties = await getPropertiesFromSheet();
   res.json({ 
-    status: 'Petrona Voice AI is running!',
-    message: 'Arnold the Deal Closer is ready!',
+    status: 'Petrona Voice AI Running',
+    agent: 'Jade',
+    features: ['Call Logs', 'Leads', 'Visits', 'Calendar'],
     properties: {
       rentals: properties.rentals.length,
       forSale: properties.forSale.length
@@ -190,9 +454,26 @@ app.get('/', async (req, res) => {
   });
 });
 
-// Handle Twilio webhook for incoming calls
+// Manual endpoints for testing
+app.post('/api/log-call', async (req, res) => {
+  await logCall(req.body);
+  res.json({ success: true });
+});
+
+app.post('/api/save-lead', async (req, res) => {
+  await saveLead(req.body);
+  res.json({ success: true });
+});
+
+app.post('/api/book-visit', async (req, res) => {
+  await saveVisit(req.body);
+  await createCalendarEvent(req.body);
+  res.json({ success: true });
+});
+
+// Twilio webhook
 app.post('/incoming-call', (req, res) => {
-  console.log('📞 Incoming call received');
+  console.log('📞 Incoming call');
   
   const host = req.headers.host;
   const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -207,20 +488,32 @@ app.post('/incoming-call', (req, res) => {
 });
 
 app.get('/incoming-call', (req, res) => {
-  res.json({ message: 'This endpoint expects POST from Twilio' });
+  res.json({ message: 'POST endpoint for Twilio' });
 });
 
-// WebSocket server for Twilio Media Streams
+// ==================== WEBSOCKET ====================
+
 const wss = new WebSocket.Server({ server, path: '/media-stream' });
 
-wss.on('connection', async (twilioWs, req) => {
-  console.log('🔗 Twilio WebSocket connected');
+wss.on('connection', async (twilioWs) => {
+  console.log('🔗 Twilio connected');
   
   const SYSTEM_PROMPT = await buildSystemPrompt();
   
   let openaiWs = null;
   let streamSid = null;
-  let callSid = null;
+  let callStartTime = Date.now();
+  let callerPhone = 'Unknown';
+  let conversationData = {
+    type: 'General',
+    name: '',
+    phone: '',
+    interest: '',
+    property: '',
+    visitDate: '',
+    visitTime: '',
+    notes: ''
+  };
 
   const connectToOpenAI = () => {
     try {
@@ -232,45 +525,40 @@ wss.on('connection', async (twilioWs, req) => {
       });
 
       openaiWs.on('open', () => {
-        console.log('🤖 Connected to OpenAI Realtime API');
+        console.log('🤖 OpenAI connected');
         
-        // FAST RESPONSE SETTINGS
         const sessionConfig = {
           type: 'session.update',
           session: {
             turn_detection: { 
               type: 'server_vad',
-              threshold: 0.5,            // More responsive
-              prefix_padding_ms: 200,    // Less padding
-              silence_duration_ms: 300   // Only 300ms wait - FAST!
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 600
             },
             input_audio_format: 'g711_ulaw',
             output_audio_format: 'g711_ulaw',
-            voice: 'echo',  // Mature confident male voice
+            voice: 'echo',
             instructions: SYSTEM_PROMPT,
             modalities: ['text', 'audio'],
-            temperature: 0.8  // Slightly more creative/natural
+            temperature: 0.8
           }
         };
         
         openaiWs.send(JSON.stringify(sessionConfig));
-        console.log('⚙️ Session configured - FAST DEAL CLOSER MODE');
 
         setTimeout(() => {
-          const initialMessage = {
+          openaiWs.send(JSON.stringify({
             type: 'conversation.item.create',
             item: {
               type: 'message',
               role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text: 'A caller just connected. Give your energetic, confident greeting as Arnold the deal closer from Petrona. Be warm and excited!'
-                }
-              ]
+              content: [{
+                type: 'input_text',
+                text: 'Caller connected. Give greeting: "Thank you for calling Petrona! This is Jade. How can I help you today? Are you calling about renting a property, a maintenance issue, selling a property, or buying and investing?"'
+              }]
             }
-          };
-          openaiWs.send(JSON.stringify(initialMessage));
+          }));
           openaiWs.send(JSON.stringify({ type: 'response.create' }));
         }, 300);
       });
@@ -279,38 +567,99 @@ wss.on('connection', async (twilioWs, req) => {
         try {
           const event = JSON.parse(data.toString());
           
+          // Send audio to Twilio
           if (event.type === 'response.audio.delta' && event.delta) {
-            const audioData = {
-              event: 'media',
-              streamSid: streamSid,
-              media: {
-                payload: event.delta
-              }
-            };
             if (twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(JSON.stringify(audioData));
+              twilioWs.send(JSON.stringify({
+                event: 'media',
+                streamSid: streamSid,
+                media: { payload: event.delta }
+              }));
             }
+          }
+          
+          // Capture transcript for logging
+          if (event.type === 'response.audio_transcript.done') {
+            const transcript = event.transcript || '';
+            console.log('🎙️ Jade:', transcript.substring(0, 100));
+            
+            // Extract data from conversation
+            if (transcript.toLowerCase().includes('got you down for') || 
+                transcript.toLowerCase().includes("i've got you down")) {
+              // Visit was scheduled
+              conversationData.notes += ' Visit scheduled.';
+            }
+          }
+          
+          if (event.type === 'conversation.item.input_audio_transcription.completed') {
+            const transcript = event.transcript || '';
+            console.log('👤 Caller:', transcript.substring(0, 100));
+            
+            // Extract caller intent
+            const lower = transcript.toLowerCase();
+            if (lower.includes('rent')) conversationData.type = 'Rental';
+            if (lower.includes('buy') || lower.includes('purchase')) conversationData.type = 'Purchase';
+            if (lower.includes('sell')) conversationData.type = 'Selling';
+            if (lower.includes('maintenance') || lower.includes('repair')) conversationData.type = 'Maintenance';
+            
+            conversationData.notes += ' ' + transcript;
           }
 
           if (event.type === 'error') {
             console.error('❌ OpenAI Error:', event.error);
           }
-
         } catch (error) {
-          console.error('Error parsing OpenAI message:', error);
+          console.error('Parse error:', error);
         }
       });
 
       openaiWs.on('error', (error) => {
-        console.error('❌ OpenAI WebSocket error:', error.message);
+        console.error('❌ OpenAI error:', error.message);
       });
 
-      openaiWs.on('close', (code, reason) => {
-        console.log('🔌 OpenAI WebSocket closed:', code, reason?.toString());
+      openaiWs.on('close', async () => {
+        console.log('🔌 OpenAI closed');
+        
+        // Log the call when it ends
+        const duration = Math.round((Date.now() - callStartTime) / 1000);
+        await logCall({
+          phone: callerPhone,
+          duration: `${Math.floor(duration / 60)}m ${duration % 60}s`,
+          type: conversationData.type,
+          summary: conversationData.notes.substring(0, 500),
+          outcome: 'Completed'
+        });
+        
+        // If we captured lead info, save it
+        if (conversationData.name || conversationData.interest) {
+          await saveLead({
+            name: conversationData.name,
+            phone: conversationData.phone || callerPhone,
+            interest: conversationData.type,
+            property: conversationData.property,
+            notes: conversationData.notes.substring(0, 500),
+            status: conversationData.visitDate ? 'Visit Scheduled' : 'New Lead'
+          });
+        }
+        
+        // If visit was scheduled, save and create calendar event
+        if (conversationData.visitDate) {
+          const visitData = {
+            visitDate: conversationData.visitDate,
+            visitTime: conversationData.visitTime,
+            name: conversationData.name,
+            phone: conversationData.phone || callerPhone,
+            property: conversationData.property,
+            notes: conversationData.notes.substring(0, 200)
+          };
+          
+          await saveVisit(visitData);
+          await createCalendarEvent(visitData);
+        }
       });
 
     } catch (error) {
-      console.error('Failed to connect to OpenAI:', error);
+      console.error('Connection failed:', error);
     }
   };
 
@@ -318,72 +667,67 @@ wss.on('connection', async (twilioWs, req) => {
     try {
       const data = JSON.parse(message.toString());
 
-      switch (data.event) {
-        case 'start':
-          streamSid = data.start.streamSid;
-          callSid = data.start.callSid;
-          console.log(`📞 Call started - StreamSid: ${streamSid}`);
-          connectToOpenAI();
-          break;
-
-        case 'media':
-          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-            const audioEvent = {
-              type: 'input_audio_buffer.append',
-              audio: data.media.payload
-            };
-            openaiWs.send(JSON.stringify(audioEvent));
-          }
-          break;
-
-        case 'stop':
-          console.log('📞 Call ended');
-          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-            openaiWs.close();
-          }
-          break;
-
-        default:
-          break;
+      if (data.event === 'start') {
+        streamSid = data.start.streamSid;
+        callerPhone = data.start.customParameters?.from || 'Unknown';
+        callStartTime = Date.now();
+        console.log('📞 Call started from:', callerPhone);
+        connectToOpenAI();
+      }
+      
+      if (data.event === 'media' && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: data.media.payload
+        }));
+      }
+      
+      if (data.event === 'stop') {
+        console.log('📞 Call ended');
+        if (openaiWs) openaiWs.close();
       }
     } catch (error) {
-      console.error('Error processing Twilio message:', error);
+      console.error('Message error:', error);
     }
   });
 
   twilioWs.on('close', () => {
-    console.log('🔌 Twilio WebSocket closed');
-    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-      openaiWs.close();
-    }
+    console.log('🔌 Twilio closed');
+    if (openaiWs) openaiWs.close();
   });
 
   twilioWs.on('error', (error) => {
-    console.error('❌ Twilio WebSocket error:', error.message);
+    console.error('❌ Twilio error:', error.message);
   });
 });
 
-// Start the server
+// ==================== START SERVER ====================
+
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('');
-  console.log('🔥 ================================');
-  console.log('   PETRONA VOICE AI - DEAL CLOSER');
-  console.log(`   Running on port ${PORT}`);
+  console.log('✨ ====================================');
+  console.log('   PETRONA VOICE AI - JADE');
+  console.log(`   Port: ${PORT}`);
+  console.log('   Voice: Echo (natural male)');
+  console.log('   Response: 600ms');
   console.log('');
-  console.log('   Arnold is ready to CLOSE DEALS!');
-  console.log('   Voice: Echo (confident male)');
-  console.log('   Response: 300ms (FAST!)');
-  console.log('================================ 🔥');
+  console.log('   Features:');
+  console.log('   ✅ Call Logging');
+  console.log('   ✅ Lead Capture');
+  console.log('   ✅ Visit Scheduling');
+  console.log('   ✅ Google Calendar');
+  console.log('==================================== ✨');
   console.log('');
   
+  await initGoogleClients();
   const properties = await getPropertiesFromSheet();
-  console.log(`📊 Loaded ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
+  console.log(`📊 ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+  console.error('Exception:', error);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('Rejection:', reason);
 });
