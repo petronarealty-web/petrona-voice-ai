@@ -309,7 +309,15 @@ function getDefaultProperties() {
 
 // ==================== SYSTEM PROMPT ====================
 
+// Pre-cached system prompt
+let cachedSystemPrompt = null;
+
 async function buildSystemPrompt() {
+  // Return cached if available
+  if (cachedSystemPrompt) {
+    return cachedSystemPrompt;
+  }
+  
   const properties = await getPropertiesFromSheet();
   
   const rentalsText = properties.rentals.map(p => `- ${p}`).join('\n');
@@ -454,6 +462,14 @@ app.get('/', async (req, res) => {
   });
 });
 
+// Keep server warm - prevents cold start issues
+setInterval(async () => {
+  try {
+    await getPropertiesFromSheet();
+    console.log('🔥 Keep-alive ping');
+  } catch (e) {}
+}, 60000); // Every 60 seconds
+
 // Manual endpoints for testing
 app.post('/api/log-call', async (req, res) => {
   await logCall(req.body);
@@ -475,6 +491,7 @@ app.post('/api/book-visit', async (req, res) => {
 app.post('/incoming-call', (req, res) => {
   console.log('📞 Incoming call');
   
+  // Respond IMMEDIATELY to Twilio
   const host = req.headers.host;
   const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -722,6 +739,10 @@ server.listen(PORT, '0.0.0.0', async () => {
   await initGoogleClients();
   const properties = await getPropertiesFromSheet();
   console.log(`📊 ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
+  
+  // Pre-build and cache system prompt
+  cachedSystemPrompt = await buildSystemPrompt();
+  console.log('✅ System prompt cached - Ready for calls!');
 });
 
 process.on('uncaughtException', (error) => {
