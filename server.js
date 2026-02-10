@@ -47,16 +47,17 @@ async function initGoogleClients() {
 // ==================== NO CACHE - ALWAYS FRESH DATA ====================
 
 async function getPropertiesFromSheet() {
-  // NO CACHE - Always fetch fresh data!
   try {
     if (!sheetsClient) {
       console.log('No sheets client, using defaults');
       return getDefaultProperties();
     }
     
+    // YOUR SHEET STRUCTURE:
+    // A: Address | B: City | C: Bedrooms | D: Bathrooms | E: Price | F: Neighborhood | G: Status | H: Features | I: Description | J: Security
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'Properties!A2:H100',
+      range: 'Properties!A2:J100',
     });
 
     const rows = response.data.values || [];
@@ -65,36 +66,30 @@ async function getPropertiesFromSheet() {
       return getDefaultProperties();
     }
 
-    const rentals = [];
-    const forSale = [];
-    const allProperties = [];
+    const properties = [];
 
     rows.forEach(row => {
       const property = {
-        type: row[0] || '',
-        address: row[1] || '',
-        city: row[2] || '',
-        beds: row[3] || '',
-        baths: row[4] || '',
-        price: row[5] || '',
-        features: row[6] || '',
-        status: row[7] || 'Available'
+        address: row[0] || '',
+        city: row[1] || '',
+        bedrooms: row[2] || '',
+        bathrooms: row[3] || '',
+        price: row[4] || '',
+        neighborhood: row[5] || '',
+        status: row[6] || 'Active',
+        features: row[7] || '',
+        description: row[8] || '',
+        security: row[9] || ''
       };
 
-      if (property.status.toLowerCase() === 'available') {
-        const listing = `${property.address}, ${property.city} - ${property.beds}BR/${property.baths}BA - ${property.price} - ${property.features}`;
-        allProperties.push(property);
-        
-        if (property.type.toLowerCase() === 'rent') {
-          rentals.push(listing);
-        } else if (property.type.toLowerCase() === 'buy' || property.type.toLowerCase() === 'sale') {
-          forSale.push(listing);
-        }
+      // Only include Active properties
+      if (property.status.toLowerCase() === 'active' && property.address) {
+        properties.push(property);
       }
     });
 
-    console.log(`📊 FRESH DATA: ${rentals.length} rentals, ${forSale.length} for sale`);
-    return { rentals, forSale, allProperties };
+    console.log(`📊 FRESH DATA: ${properties.length} properties loaded`);
+    return { properties };
 
   } catch (error) {
     console.error('Properties error:', error.message);
@@ -104,15 +99,72 @@ async function getPropertiesFromSheet() {
 
 function getDefaultProperties() {
   return {
-    rentals: [
-      '123 Main St, Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym',
-      '456 Oak Ave, Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront views'
-    ],
-    forSale: [
-      '789 Elm Dr, Westport - 3BR/2BA - $750,000 - Fully renovated downtown'
-    ],
-    allProperties: []
+    properties: [
+      {
+        address: '213 Ely Ave',
+        city: 'Norwalk',
+        bedrooms: '2',
+        bathrooms: '1',
+        price: '$2,500',
+        neighborhood: 'Downtown',
+        status: 'Active',
+        features: 'Hardwood Floors, Updated Kitchen',
+        description: 'Beautiful updated family home in the heart of Downtown',
+        security: '1 month rent'
+      }
+    ]
   };
+}
+
+// Get FAQ from sheet
+async function getFAQFromSheet() {
+  try {
+    if (!sheetsClient) return [];
+    
+    const response = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'FAQ!A2:E50',
+    });
+
+    const rows = response.data.values || [];
+    const faqs = rows.map(row => ({
+      category: row[0] || '',
+      question: row[1] || '',
+      answer: row[2] || '',
+      keywords: row[3] || '',
+      priority: row[4] || ''
+    }));
+    
+    console.log(`📚 Loaded ${faqs.length} FAQs`);
+    return faqs;
+  } catch (error) {
+    console.error('FAQ error:', error.message);
+    return [];
+  }
+}
+
+// Get Connecticut Info from sheet
+async function getConnecticutInfo() {
+  try {
+    if (!sheetsClient) return [];
+    
+    const response = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Connecticut_Info!A2:B50',
+    });
+
+    const rows = response.data.values || [];
+    const info = rows.map(row => ({
+      topic: row[0] || '',
+      information: row[1] || ''
+    }));
+    
+    console.log(`🏠 Loaded ${info.length} CT info items`);
+    return info;
+  } catch (error) {
+    console.error('CT Info error:', error.message);
+    return [];
+  }
 }
 
 // ==================== LOGGING FUNCTIONS ====================
@@ -149,6 +201,7 @@ async function saveLead(leadData) {
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    // Your Leads columns: Timestamp | Name | Phone | Email | Interest | Property | Budget | Notes | Status
     const values = [[
       timestamp,
       leadData.name || '',
@@ -158,7 +211,7 @@ async function saveLead(leadData) {
       leadData.property || '',
       leadData.budget || '',
       leadData.notes || '',
-      leadData.status || 'New Lead'
+      leadData.status || 'New'
     ]];
     
     await sheetsClient.spreadsheets.values.append({
@@ -181,6 +234,7 @@ async function saveVisit(visitData) {
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    // Your Visits columns: Timestamp | VisitDate | VisitTime | Name | Phone | Property | Address | Notes | Status
     const values = [[
       timestamp,
       visitData.visitDate || '',
@@ -202,7 +256,7 @@ async function saveVisit(visitData) {
     
     console.log('📅 Visit saved:', visitData.visitDate, visitData.visitTime);
     
-    // Create calendar event and log to CalendarEvents tab
+    // Create calendar event and log it
     const calendarEvent = await createCalendarEvent(visitData);
     if (calendarEvent) {
       await logCalendarEvent(visitData, calendarEvent);
@@ -269,7 +323,7 @@ async function createCalendarEvent(visitData) {
       description: `Property: ${visitData.property || 'TBD'}
 Address: ${visitData.address || 'TBD'}
 Phone: ${visitData.phone || 'N/A'}
-Interest: ${visitData.interest || 'N/A'}
+Interest: ${visitData.interest || 'Rental'}
 Notes: ${visitData.notes || 'None'}
 
 Booked via Petrona AI - Jade`,
@@ -304,12 +358,13 @@ Booked via Petrona AI - Jade`,
   }
 }
 
-// NEW: Log calendar events to CalendarEvents tab
+// Log calendar events to CalendarEvents tab
 async function logCalendarEvent(visitData, calendarEvent) {
   if (!sheetsClient) return;
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    // CalendarEvents: Timestamp | EventID | Title | Date | Time | Name | Phone | Property | Address | CalendarLink | Status
     const values = [[
       timestamp,
       calendarEvent.id || '',
@@ -337,19 +392,20 @@ async function logCalendarEvent(visitData, calendarEvent) {
   }
 }
 
-// NEW: Log WhatsApp messages
+// Log WhatsApp messages
 async function logWhatsAppMessage(messageData) {
   if (!sheetsClient) return;
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    // WhatsAppLogs: Timestamp | Phone | Direction | CustomerMsg | AIReply | MessageType | Property | Status
     const values = [[
       timestamp,
       messageData.phone || '',
-      messageData.direction || 'outbound', // inbound or outbound
+      messageData.direction || 'outbound',
       messageData.customerMessage || '',
       messageData.aiReply || '',
-      messageData.messageType || 'text', // text, image, video
+      messageData.messageType || 'text',
       messageData.property || '',
       messageData.status || 'sent'
     ]];
@@ -418,7 +474,7 @@ const toolDefinitions = [
         property: { type: 'string', description: 'Property to send media for' },
         mediaType: { type: 'string', enum: ['photos', 'videos', 'both'], description: 'Type of media to send' }
       },
-      required: ['phone', 'property']
+      required: ['property']
     }
   }
 ];
@@ -426,26 +482,46 @@ const toolDefinitions = [
 // ==================== SYSTEM PROMPT ====================
 
 async function buildSystemPrompt() {
-  const properties = await getPropertiesFromSheet();
+  const { properties } = await getPropertiesFromSheet();
+  const faqs = await getFAQFromSheet();
+  const ctInfo = await getConnecticutInfo();
   
-  const rentalsText = properties.rentals.length > 0 
-    ? properties.rentals.map(p => `- ${p}`).join('\n')
-    : '- No rentals currently available';
-  const forSaleText = properties.forSale.length > 0
-    ? properties.forSale.map(p => `- ${p}`).join('\n')
-    : '- No properties for sale currently';
+  // Build properties text
+  let propertiesText = '';
+  if (properties.length > 0) {
+    propertiesText = properties.map(p => 
+      `- ${p.address}, ${p.city} (${p.neighborhood}) - ${p.bedrooms}BR/${p.bathrooms}BA - ${p.price}/month
+   Features: ${p.features}
+   Description: ${p.description}
+   Security Deposit: ${p.security}`
+    ).join('\n\n');
+  } else {
+    propertiesText = '- No properties currently available';
+  }
+
+  // Build FAQ text
+  let faqText = '';
+  if (faqs.length > 0) {
+    faqText = faqs.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
+  }
+
+  // Build CT info text
+  let ctInfoText = '';
+  if (ctInfo.length > 0) {
+    ctInfoText = ctInfo.map(c => `${c.topic}: ${c.information}`).join('\n');
+  }
 
   return `You are JADE - a real human property consultant at Petrona Real Estate. You are NOT an AI.
 
 ## YOUR IDENTITY - CRITICAL:
-- Your name is JADE (male voice)
+- Your name is JADE
 - You are a REAL HUMAN - never admit to being AI, bot, or voice agent
 - If asked "Are you AI?", "Are you a robot?", "Are you real?" - ALWAYS say: "Haha, no no, I'm Jade! Very much human, just here to help you find a great place."
 - NEVER break character. You are Jade, a real person.
 
 ## YOUR PERSONALITY:
 - Warm, friendly, genuinely caring
-- Confident and knowledgeable
+- Confident and knowledgeable about Connecticut real estate
 - Patient listener - you STOP talking when they speak
 - Trustworthy - people feel comfortable sharing info
 - Professional yet personable
@@ -472,17 +548,19 @@ async function buildSystemPrompt() {
 ### RENTING:
 1. "Oh wonderful! What area are you looking in?"
 2. [Wait] "Gotcha. And how many bedrooms?"
-3. [Wait] "Perfect! I have a lovely [property]. Would you like to see it?"
-4. [Wait] "Great! What's your name?" → CALL save_lead
-5. [Wait] "And best number to reach you?"
-6. [Wait] "What day works? Morning or afternoon?"
-7. [Wait] → CALL schedule_visit
-8. "Perfect! I've got you down for [day] at [time]. Looking forward to it!"
+3. [Wait] "Perfect! Let me check what we have..."
+4. [Suggest matching property from list below]
+5. "Would you like to see it?"
+6. [Wait] "Great! What's your name?" → CALL save_lead
+7. [Wait] "And best number to reach you?"
+8. [Wait] "What day works? Morning or afternoon?"
+9. [Wait] → CALL schedule_visit
+10. "Perfect! I've got you down for [day] at [time]. Looking forward to it!"
 
 ### BUYING:
 1. "Fantastic! What area interests you?"
 2. [Wait] "Nice. And what's your budget range?"
-3. [Wait] "I have a beautiful [property]. Want to schedule a viewing?"
+3. [Wait] "I can help you find something. Let me get your info..."
 4. Continue same as renting...
 
 ### MAINTENANCE:
@@ -516,11 +594,15 @@ async function buildSystemPrompt() {
 
 ## AVAILABLE PROPERTIES:
 
-### FOR RENT:
-${rentalsText}
+${propertiesText}
 
-### FOR PURCHASE:
-${forSaleText}
+## FREQUENTLY ASKED QUESTIONS:
+
+${faqText}
+
+## CONNECTICUT REAL ESTATE INFO:
+
+${ctInfoText}
 
 ## FINAL RULES:
 1. You are JADE - HUMAN, not AI
@@ -531,7 +613,8 @@ ${forSaleText}
 6. Only 9 AM - 6 PM for visits
 7. ALWAYS use save_lead when you get their name
 8. ALWAYS use schedule_visit when booking
-9. Use send_property_media when they ask for photos/videos`;
+9. Use send_property_media when they ask for photos/videos
+10. Use the FAQ and CT Info to answer questions knowledgeably`;
 }
 
 // ==================== HANDLE FUNCTION CALLS ====================
@@ -558,10 +641,8 @@ async function handleFunctionCall(functionName, args, callState) {
       return { success: true, message: 'Visit scheduled and calendar event created' };
       
     case 'send_property_media':
-      // Store request for WhatsApp processing
       callState.mediaRequest = args;
       console.log('📸 Media request stored:', args);
-      // Log to WhatsApp tab
       await logWhatsAppMessage({
         phone: args.phone || callState.leadData.phone,
         direction: 'outbound',
@@ -581,34 +662,33 @@ async function handleFunctionCall(functionName, args, callState) {
 // ==================== API ENDPOINTS ====================
 
 app.get('/', async (req, res) => {
-  const properties = await getPropertiesFromSheet();
+  const { properties } = await getPropertiesFromSheet();
   res.json({ 
     status: 'Petrona Voice AI Running',
-    agent: 'Jade',
+    agent: 'Jade v3.1',
     features: [
       'Voice Calls',
       'Google Sheets CRM',
       'Google Calendar',
-      'WhatsApp Ready',
-      'Photo/Video Sending'
+      'FAQ Knowledge',
+      'CT Info Knowledge',
+      'WhatsApp Ready'
     ],
     sheets: [
       'Properties',
+      'Connecticut_Info',
+      'FAQ',
       'CallLogs', 
       'Leads',
       'Visits',
       'CalendarEvents',
       'WhatsAppLogs'
     ],
-    properties: {
-      rentals: properties.rentals.length,
-      forSale: properties.forSale.length
-    },
+    properties: properties.length,
     timestamp: new Date().toISOString()
   });
 });
 
-// Twilio webhook
 app.post('/incoming-call', (req, res) => {
   console.log('📞 Incoming call');
   
@@ -637,7 +717,7 @@ wss.on('connection', async (twilioWs) => {
   
   // Get FRESH system prompt for every call
   const SYSTEM_PROMPT = await buildSystemPrompt();
-  console.log('📋 Fresh system prompt loaded');
+  console.log('📋 Fresh system prompt loaded with Properties, FAQ, CT Info');
   
   let openaiWs = null;
   let streamSid = null;
@@ -670,11 +750,11 @@ wss.on('connection', async (twilioWs) => {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 600  // Natural pause
+              silence_duration_ms: 600
             },
             input_audio_format: 'g711_ulaw',
             output_audio_format: 'g711_ulaw',
-            voice: 'echo',  // Male voice for Jade
+            voice: 'echo',
             instructions: SYSTEM_PROMPT,
             modalities: ['text', 'audio'],
             temperature: 0.8,
@@ -705,7 +785,6 @@ wss.on('connection', async (twilioWs) => {
         try {
           const event = JSON.parse(data.toString());
           
-          // Send audio
           if (event.type === 'response.audio.delta' && event.delta) {
             if (twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
@@ -716,7 +795,6 @@ wss.on('connection', async (twilioWs) => {
             }
           }
           
-          // Handle function calls
           if (event.type === 'response.function_call_arguments.done') {
             const functionName = event.name;
             const args = JSON.parse(event.arguments || '{}');
@@ -735,7 +813,6 @@ wss.on('connection', async (twilioWs) => {
             openaiWs.send(JSON.stringify({ type: 'response.create' }));
           }
           
-          // Track conversation
           if (event.type === 'response.audio_transcript.done') {
             callState.callSummary += `Jade: ${event.transcript}\n`;
           }
@@ -743,7 +820,6 @@ wss.on('connection', async (twilioWs) => {
           if (event.type === 'conversation.item.input_audio_transcription.completed') {
             callState.callSummary += `Caller: ${event.transcript}\n`;
             
-            // Extract interest
             const lower = (event.transcript || '').toLowerCase();
             if (lower.includes('rent')) callState.leadData.interest = 'Rental';
             if (lower.includes('buy') || lower.includes('purchase')) callState.leadData.interest = 'Purchase';
@@ -766,7 +842,6 @@ wss.on('connection', async (twilioWs) => {
       openaiWs.on('close', async () => {
         console.log('🔌 OpenAI closed');
         
-        // Log the call
         const duration = Math.round((Date.now() - callStartTime) / 1000);
         await logCall({
           phone: callState.leadData.phone || 'Unknown',
@@ -824,21 +899,24 @@ wss.on('connection', async (twilioWs) => {
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('');
   console.log('✨ =====================================');
-  console.log('   PETRONA VOICE AI - JADE v3.0');
+  console.log('   PETRONA VOICE AI - JADE v3.1');
   console.log(`   Port: ${PORT}`);
   console.log('');
   console.log('   ✅ Voice AI (Jade)');
-  console.log('   ✅ Google Sheets (6 Tabs)');
+  console.log('   ✅ Properties (Your Format)');
+  console.log('   ✅ FAQ Knowledge');
+  console.log('   ✅ Connecticut Info');
   console.log('   ✅ Google Calendar');
-  console.log('   ✅ Function Calling');
   console.log('   ✅ WhatsApp Ready');
-  console.log('   ✅ NO CACHE - Fresh Data Every Call');
-  console.log('===================================== ✨');
+  console.log('   ✅ NO CACHE - Fresh Data');
+  console.log('=====================================  ✨');
   console.log('');
   
   await initGoogleClients();
-  const properties = await getPropertiesFromSheet();
-  console.log(`📊 Properties: ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
+  const { properties } = await getPropertiesFromSheet();
+  const faqs = await getFAQFromSheet();
+  console.log(`📊 Properties: ${properties.length}`);
+  console.log(`📚 FAQs: ${faqs.length}`);
   console.log('✅ Jade ready for calls!');
 });
 
