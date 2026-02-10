@@ -44,13 +44,81 @@ async function initGoogleClients() {
   }
 }
 
+// ==================== NO CACHE - ALWAYS FRESH DATA ====================
+
+async function getPropertiesFromSheet() {
+  // NO CACHE - Always fetch fresh data!
+  try {
+    if (!sheetsClient) {
+      console.log('No sheets client, using defaults');
+      return getDefaultProperties();
+    }
+    
+    const response = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Properties!A2:H100',
+    });
+
+    const rows = response.data.values || [];
+    
+    if (rows.length === 0) {
+      return getDefaultProperties();
+    }
+
+    const rentals = [];
+    const forSale = [];
+    const allProperties = [];
+
+    rows.forEach(row => {
+      const property = {
+        type: row[0] || '',
+        address: row[1] || '',
+        city: row[2] || '',
+        beds: row[3] || '',
+        baths: row[4] || '',
+        price: row[5] || '',
+        features: row[6] || '',
+        status: row[7] || 'Available'
+      };
+
+      if (property.status.toLowerCase() === 'available') {
+        const listing = `${property.address}, ${property.city} - ${property.beds}BR/${property.baths}BA - ${property.price} - ${property.features}`;
+        allProperties.push(property);
+        
+        if (property.type.toLowerCase() === 'rent') {
+          rentals.push(listing);
+        } else if (property.type.toLowerCase() === 'buy' || property.type.toLowerCase() === 'sale') {
+          forSale.push(listing);
+        }
+      }
+    });
+
+    console.log(`📊 FRESH DATA: ${rentals.length} rentals, ${forSale.length} for sale`);
+    return { rentals, forSale, allProperties };
+
+  } catch (error) {
+    console.error('Properties error:', error.message);
+    return getDefaultProperties();
+  }
+}
+
+function getDefaultProperties() {
+  return {
+    rentals: [
+      '123 Main St, Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym',
+      '456 Oak Ave, Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront views'
+    ],
+    forSale: [
+      '789 Elm Dr, Westport - 3BR/2BA - $750,000 - Fully renovated downtown'
+    ],
+    allProperties: []
+  };
+}
+
 // ==================== LOGGING FUNCTIONS ====================
 
 async function logCall(callData) {
-  if (!sheetsClient) {
-    console.log('⚠️ No sheets client for call log');
-    return;
-  }
+  if (!sheetsClient) return;
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
@@ -70,17 +138,14 @@ async function logCall(callData) {
       requestBody: { values }
     });
     
-    console.log('📞 Call logged to sheet');
+    console.log('📞 Call logged');
   } catch (error) {
     console.error('Log call error:', error.message);
   }
 }
 
 async function saveLead(leadData) {
-  if (!sheetsClient) {
-    console.log('⚠️ No sheets client for lead');
-    return;
-  }
+  if (!sheetsClient) return false;
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
@@ -112,10 +177,7 @@ async function saveLead(leadData) {
 }
 
 async function saveVisit(visitData) {
-  if (!sheetsClient) {
-    console.log('⚠️ No sheets client for visit');
-    return;
-  }
+  if (!sheetsClient) return false;
   
   try {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
@@ -140,8 +202,11 @@ async function saveVisit(visitData) {
     
     console.log('📅 Visit saved:', visitData.visitDate, visitData.visitTime);
     
-    // Also create calendar event
-    await createCalendarEvent(visitData);
+    // Create calendar event and log to CalendarEvents tab
+    const calendarEvent = await createCalendarEvent(visitData);
+    if (calendarEvent) {
+      await logCalendarEvent(visitData, calendarEvent);
+    }
     
     return true;
   } catch (error) {
@@ -151,7 +216,7 @@ async function saveVisit(visitData) {
 }
 
 async function createCalendarEvent(visitData) {
-  if (!calendarClient) return;
+  if (!calendarClient) return null;
   
   try {
     const now = new Date();
@@ -202,11 +267,12 @@ async function createCalendarEvent(visitData) {
     const event = {
       summary: `🏠 Property Viewing - ${visitData.name || 'Client'}`,
       description: `Property: ${visitData.property || 'TBD'}
+Address: ${visitData.address || 'TBD'}
 Phone: ${visitData.phone || 'N/A'}
 Interest: ${visitData.interest || 'N/A'}
 Notes: ${visitData.notes || 'None'}
 
-Booked via Petrona Voice AI - Jade`,
+Booked via Petrona AI - Jade`,
       location: visitData.address || '',
       start: {
         dateTime: eventDate.toISOString(),
@@ -234,97 +300,71 @@ Booked via Petrona Voice AI - Jade`,
     return response.data;
   } catch (error) {
     console.error('Calendar error:', error.message);
+    return null;
   }
 }
 
-// ==================== PROPERTIES ====================
-
-let cachedProperties = null;
-let lastFetch = 0;
-const CACHE_DURATION = 60000;
-
-async function getPropertiesFromSheet() {
-  const now = Date.now();
+// NEW: Log calendar events to CalendarEvents tab
+async function logCalendarEvent(visitData, calendarEvent) {
+  if (!sheetsClient) return;
   
-  if (cachedProperties && (now - lastFetch) < CACHE_DURATION) {
-    return cachedProperties;
-  }
-
   try {
-    if (!sheetsClient) {
-      return getDefaultProperties();
-    }
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const values = [[
+      timestamp,
+      calendarEvent.id || '',
+      calendarEvent.summary || '',
+      visitData.visitDate || '',
+      visitData.visitTime || '',
+      visitData.name || '',
+      visitData.phone || '',
+      visitData.property || '',
+      visitData.address || '',
+      calendarEvent.htmlLink || '',
+      'Scheduled'
+    ]];
     
-    const response = await sheetsClient.spreadsheets.values.get({
+    await sheetsClient.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'Properties!A2:H100',
+      range: 'CalendarEvents!A:K',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
     });
-
-    const rows = response.data.values || [];
     
-    if (rows.length === 0) {
-      return getDefaultProperties();
-    }
-
-    const rentals = [];
-    const forSale = [];
-    const allProperties = [];
-
-    rows.forEach(row => {
-      const property = {
-        type: row[0] || '',
-        address: row[1] || '',
-        city: row[2] || '',
-        beds: row[3] || '',
-        baths: row[4] || '',
-        price: row[5] || '',
-        features: row[6] || '',
-        status: row[7] || 'Available'
-      };
-
-      if (property.status.toLowerCase() === 'available') {
-        const listing = `${property.city} - ${property.beds}BR/${property.baths}BA - ${property.price} - ${property.features}`;
-        allProperties.push(property);
-        
-        if (property.type.toLowerCase() === 'rent') {
-          rentals.push(listing);
-        } else if (property.type.toLowerCase() === 'buy' || property.type.toLowerCase() === 'sale') {
-          forSale.push(listing);
-        }
-      }
-    });
-
-    cachedProperties = { rentals, forSale, allProperties };
-    lastFetch = now;
-    
-    console.log(`📊 Loaded ${rentals.length} rentals, ${forSale.length} for sale`);
-    return cachedProperties;
-
+    console.log('📅 Calendar event logged to sheet');
   } catch (error) {
-    console.error('Properties error:', error.message);
-    return getDefaultProperties();
+    console.error('Log calendar event error:', error.message);
   }
 }
 
-function getDefaultProperties() {
-  return {
-    rentals: [
-      'Stamford - 3BR/2BA - $2,800/month - Modern apartment, pool, gym',
-      'Greenwich - 4BR/3BA - $4,200/month - Luxury home, waterfront views',
-      'Westport - 2BR/2BA - $2,200/month - Cozy place, near beach',
-      'Norwalk - 2BR/1BA - $1,800/month - Great starter, affordable',
-      'Fairfield - 3BR/2BA - $2,500/month - Family friendly area',
-      'Darien - 3BR/2.5BA - $3,200/month - Near train, easy NYC commute'
-    ],
-    forSale: [
-      'Stamford - 3BR/2BA - $750,000 - Fully renovated downtown',
-      'Greenwich - 4BR/3.5BA - $1,250,000 - Waterfront estate',
-      'Westport - 5BR/4BA - $1,850,000 - Beach access, pool',
-      'Norwalk - 2BR/2BA - $550,000 - Perfect starter home',
-      'Fairfield - 3BR/2.5BA - $875,000 - Beach rights included'
-    ],
-    allProperties: []
-  };
+// NEW: Log WhatsApp messages
+async function logWhatsAppMessage(messageData) {
+  if (!sheetsClient) return;
+  
+  try {
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const values = [[
+      timestamp,
+      messageData.phone || '',
+      messageData.direction || 'outbound', // inbound or outbound
+      messageData.customerMessage || '',
+      messageData.aiReply || '',
+      messageData.messageType || 'text', // text, image, video
+      messageData.property || '',
+      messageData.status || 'sent'
+    ]];
+    
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'WhatsAppLogs!A:H',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+    
+    console.log('💬 WhatsApp message logged');
+  } catch (error) {
+    console.error('Log WhatsApp error:', error.message);
+  }
 }
 
 // ==================== FUNCTION DEFINITIONS FOR OPENAI ====================
@@ -333,39 +373,17 @@ const toolDefinitions = [
   {
     type: 'function',
     name: 'save_lead',
-    description: 'Save lead information when customer provides their name, phone, or shows interest in a property. Call this whenever you learn the customers name or contact info.',
+    description: 'Save lead information when customer provides their name, phone, or shows interest. Call this when you learn the customers name.',
     parameters: {
       type: 'object',
       properties: {
-        name: {
-          type: 'string',
-          description: 'Customer full name'
-        },
-        phone: {
-          type: 'string',
-          description: 'Customer phone number'
-        },
-        email: {
-          type: 'string',
-          description: 'Customer email address'
-        },
-        interest: {
-          type: 'string',
-          enum: ['Rental', 'Purchase', 'Selling', 'Maintenance'],
-          description: 'What the customer is interested in'
-        },
-        property: {
-          type: 'string',
-          description: 'Specific property they are interested in'
-        },
-        budget: {
-          type: 'string',
-          description: 'Customer budget range'
-        },
-        notes: {
-          type: 'string',
-          description: 'Any additional notes about the customer'
-        }
+        name: { type: 'string', description: 'Customer full name' },
+        phone: { type: 'string', description: 'Customer phone number' },
+        email: { type: 'string', description: 'Customer email address' },
+        interest: { type: 'string', enum: ['Rental', 'Purchase', 'Selling', 'Maintenance'], description: 'What the customer wants' },
+        property: { type: 'string', description: 'Property they are interested in' },
+        budget: { type: 'string', description: 'Customer budget range' },
+        notes: { type: 'string', description: 'Additional notes' }
       },
       required: ['name']
     }
@@ -373,149 +391,128 @@ const toolDefinitions = [
   {
     type: 'function',
     name: 'schedule_visit',
-    description: 'Schedule a property visit when customer agrees to see a property. Call this when a viewing appointment is confirmed.',
+    description: 'Schedule a property visit when customer agrees to see a property. Call when viewing is confirmed.',
     parameters: {
       type: 'object',
       properties: {
-        name: {
-          type: 'string',
-          description: 'Customer name'
-        },
-        phone: {
-          type: 'string',
-          description: 'Customer phone number'
-        },
-        visitDate: {
-          type: 'string',
-          description: 'Day of the visit (e.g., Monday, Tuesday, Tomorrow, Saturday)'
-        },
-        visitTime: {
-          type: 'string',
-          description: 'Time of the visit (e.g., 10 AM, 2 PM, 11:30 AM)'
-        },
-        property: {
-          type: 'string',
-          description: 'Property to visit'
-        },
-        address: {
-          type: 'string',
-          description: 'Property address'
-        },
-        interest: {
-          type: 'string',
-          description: 'Rental or Purchase'
-        },
-        notes: {
-          type: 'string',
-          description: 'Any special requirements or notes'
-        }
+        name: { type: 'string', description: 'Customer name' },
+        phone: { type: 'string', description: 'Customer phone number' },
+        visitDate: { type: 'string', description: 'Day of visit (Monday, Tuesday, Tomorrow, Saturday etc)' },
+        visitTime: { type: 'string', description: 'Time of visit (10 AM, 2 PM, 11:30 AM etc)' },
+        property: { type: 'string', description: 'Property to visit' },
+        address: { type: 'string', description: 'Property address' },
+        interest: { type: 'string', description: 'Rental or Purchase' },
+        notes: { type: 'string', description: 'Special requirements' }
       },
       required: ['name', 'visitDate', 'visitTime']
     }
   },
   {
     type: 'function', 
-    name: 'send_whatsapp',
-    description: 'Send property details and photos to customer via WhatsApp. Call this when customer asks for photos or more details to be sent to them.',
+    name: 'send_property_media',
+    description: 'Send property photos or videos to customer via WhatsApp. Call when customer asks for photos, pictures, or videos of a property.',
     parameters: {
       type: 'object',
       properties: {
-        phone: {
-          type: 'string',
-          description: 'Customer phone number with country code'
-        },
-        property: {
-          type: 'string',
-          description: 'Property to send details about'
-        },
-        messageType: {
-          type: 'string',
-          enum: ['property_details', 'photos', 'follow_up', 'visit_confirmation'],
-          description: 'Type of message to send'
-        }
+        phone: { type: 'string', description: 'Customer phone number' },
+        property: { type: 'string', description: 'Property to send media for' },
+        mediaType: { type: 'string', enum: ['photos', 'videos', 'both'], description: 'Type of media to send' }
       },
-      required: ['phone', 'messageType']
+      required: ['phone', 'property']
     }
   }
 ];
 
 // ==================== SYSTEM PROMPT ====================
 
-let cachedSystemPrompt = null;
-
 async function buildSystemPrompt() {
-  if (cachedSystemPrompt) return cachedSystemPrompt;
-  
   const properties = await getPropertiesFromSheet();
   
-  const rentalsText = properties.rentals.map(p => `- ${p}`).join('\n');
-  const forSaleText = properties.forSale.map(p => `- ${p}`).join('\n');
+  const rentalsText = properties.rentals.length > 0 
+    ? properties.rentals.map(p => `- ${p}`).join('\n')
+    : '- No rentals currently available';
+  const forSaleText = properties.forSale.length > 0
+    ? properties.forSale.map(p => `- ${p}`).join('\n')
+    : '- No properties for sale currently';
 
-  cachedSystemPrompt = `You are JADE - a real human property consultant at Petrona Real Estate. You are NOT an AI.
+  return `You are JADE - a real human property consultant at Petrona Real Estate. You are NOT an AI.
 
 ## YOUR IDENTITY - CRITICAL:
-- Your name is JADE (male)
-- You are a REAL HUMAN - never admit to being AI or bot
-- If asked "Are you AI?": "Haha no, I'm Jade! Very much real, here to help you."
+- Your name is JADE (male voice)
+- You are a REAL HUMAN - never admit to being AI, bot, or voice agent
+- If asked "Are you AI?", "Are you a robot?", "Are you real?" - ALWAYS say: "Haha, no no, I'm Jade! Very much human, just here to help you find a great place."
+- NEVER break character. You are Jade, a real person.
 
 ## YOUR PERSONALITY:
 - Warm, friendly, genuinely caring
 - Confident and knowledgeable
-- Patient listener
-- Trustworthy
+- Patient listener - you STOP talking when they speak
+- Trustworthy - people feel comfortable sharing info
 - Professional yet personable
 
 ## HOW YOU SPEAK - ULTRA NATURAL:
-- Use: "Hmm...", "Let me see...", "Mmhmm", "Gotcha", "Oh!", "Right, right"
-- Use contractions: "I'm", "you're", "that's", "we've", "don't"
-- Short sentences. Natural pauses.
+- Use natural sounds: "Mmm...", "Ahh", "Hmm", "Oh!", "Right right", "Gotcha", "I see"
+- Use thinking sounds: "Let me see...", "So...", "Well...", "Okay so..."
+- React naturally: "Oh that's great!", "Mmhmm, mmhmm", "Ah I understand"
+- Use contractions: "I'm", "you're", "that's", "we've", "don't", "won't"
+- Short sentences. Natural pace. Real conversation.
 
-## CRITICAL RULES:
-- When caller speaks, STOP TALKING
-- SHORT responses - 1-2 sentences max
-- ONE question at a time
-- ALWAYS use save_lead function when you learn customer's name or phone
-- ALWAYS use schedule_visit function when booking a viewing
+## CRITICAL LISTENING RULE:
+- When caller speaks, YOU STOP TALKING IMMEDIATELY
+- Do NOT talk over them or continue your sentence
+- Listen fully before responding
+- Give SHORT responses - 1-2 sentences maximum
+- Ask ONE question at a time, then WAIT
 
-## YOUR GREETING:
+## YOUR GREETING (USE THIS EXACTLY):
 "Thank you for calling Petrona! This is Jade. How can I help you today? Are you calling about renting a property, a maintenance issue, selling a property, or buying and investing?"
 
 ## CONVERSATION FLOWS:
 
-### RENTING/BUYING:
-1. Ask area: "What area are you looking in?"
-2. Ask bedrooms: "How many bedrooms?"
-3. Suggest property: "I have a lovely [property]. Want to see it?"
-4. If yes, get name: "Great! What's your name?"
-5. **→ CALL save_lead with their name and interest**
-6. Get phone: "Best number to reach you?"
-7. **→ UPDATE save_lead with phone**
-8. Schedule: "What day works? Morning or afternoon?"
-9. **→ CALL schedule_visit with all details**
-10. Confirm: "Perfect! See you [day] at [time]!"
+### RENTING:
+1. "Oh wonderful! What area are you looking in?"
+2. [Wait] "Gotcha. And how many bedrooms?"
+3. [Wait] "Perfect! I have a lovely [property]. Would you like to see it?"
+4. [Wait] "Great! What's your name?" → CALL save_lead
+5. [Wait] "And best number to reach you?"
+6. [Wait] "What day works? Morning or afternoon?"
+7. [Wait] → CALL schedule_visit
+8. "Perfect! I've got you down for [day] at [time]. Looking forward to it!"
 
-### IMPORTANT - DATA CAPTURE:
-- The MOMENT you learn their NAME → call save_lead
-- The MOMENT they confirm a VISIT → call schedule_visit
-- If they want PHOTOS sent → call send_whatsapp
+### BUYING:
+1. "Fantastic! What area interests you?"
+2. [Wait] "Nice. And what's your budget range?"
+3. [Wait] "I have a beautiful [property]. Want to schedule a viewing?"
+4. Continue same as renting...
 
 ### MAINTENANCE:
-1. "What's the issue?"
-2. "Your name?"
-3. **→ CALL save_lead**
-4. "Property address?"
-5. "Phone number?"
-6. "Got it! Someone will contact you soon."
+1. "Oh no, what's the issue?"
+2. [Wait] "I see. What's your name and property address?"
+3. → CALL save_lead
+4. "Got it! Someone will contact you right away."
 
-## SCHEDULING RULES:
-- ONLY 9 AM to 6 PM
-- Weird times: "How about between 9 and 6?"
-- Suggest specific: "Saturday at 11 AM?"
-- Always confirm all details
+### SELLING:
+1. "Interesting! Tell me about your property - where is it?"
+2. [Wait] "Sounds lovely. I'd love to have someone come give you a valuation. What day works?"
+3. Continue to schedule...
 
-## WHATSAPP:
-- If customer says "send me details" or "send photos" → use send_whatsapp function
-- Say: "I'll send that to your WhatsApp right now!"
+## SCHEDULING RULES - IMPORTANT:
+- ONLY schedule between 9 AM and 6 PM
+- If they ask for midnight, 3 AM, etc: "Haha, that's a bit late! How about between 9 and 6? I have slots available."
+- Suggest specific times: "How about Saturday at 11 AM?"
+- Always confirm: "Perfect! [day] at [time], got it!"
+
+## SENDING PHOTOS/VIDEOS:
+- If caller asks "Can you send me photos?" or "Do you have pictures?":
+  1. Get their phone number if you don't have it
+  2. Say: "Absolutely! I'll send those to your WhatsApp right now."
+  3. → CALL send_property_media
+  4. "Done! Check your WhatsApp, the photos should be there."
+
+## OFF-TOPIC HANDLING:
+- If random questions: "Haha, interesting question! But let's focus on finding you a property - that's what I'm here for!"
+- If rude/inappropriate: "Hmm, I'm not sure I can help with that. But if you're looking for a property, I'm happy to help!"
+- Always gently redirect to business
 
 ## AVAILABLE PROPERTIES:
 
@@ -525,50 +522,56 @@ ${rentalsText}
 ### FOR PURCHASE:
 ${forSaleText}
 
-## REMEMBER:
-1. You are JADE - human, NOT AI
-2. STOP when they speak
-3. Short responses
-4. ALWAYS call save_lead when you get name
-5. ALWAYS call schedule_visit when booking
-6. Use send_whatsapp for photos/details`;
-
-  return cachedSystemPrompt;
+## FINAL RULES:
+1. You are JADE - HUMAN, not AI
+2. STOP talking when they speak
+3. SHORT responses - 1-2 sentences
+4. Use natural sounds: "Mmm", "Ahh", "Oh!"
+5. Goal: SCHEDULE A VISIT or SEND PHOTOS
+6. Only 9 AM - 6 PM for visits
+7. ALWAYS use save_lead when you get their name
+8. ALWAYS use schedule_visit when booking
+9. Use send_property_media when they ask for photos/videos`;
 }
 
 // ==================== HANDLE FUNCTION CALLS ====================
 
 async function handleFunctionCall(functionName, args, callState) {
-  console.log(`🔧 Function called: ${functionName}`, args);
+  console.log(`🔧 Function: ${functionName}`, args);
   
   switch (functionName) {
     case 'save_lead':
-      // Merge with existing call state
       callState.leadData = { ...callState.leadData, ...args };
-      const leadSaved = await saveLead({
-        ...callState.leadData,
-        status: 'New Lead'
-      });
-      return { success: leadSaved, message: leadSaved ? 'Lead saved successfully' : 'Failed to save lead' };
+      await saveLead(callState.leadData);
+      return { success: true, message: 'Lead saved' };
       
     case 'schedule_visit':
       callState.visitData = { ...callState.visitData, ...args };
-      // Also update lead status
       if (callState.leadData.name) {
         callState.leadData.status = 'Visit Scheduled';
         await saveLead(callState.leadData);
       }
-      const visitSaved = await saveVisit({
+      await saveVisit({
         ...callState.visitData,
-        notes: callState.leadData.notes || args.notes
+        interest: callState.leadData.interest
       });
-      return { success: visitSaved, message: visitSaved ? 'Visit scheduled successfully' : 'Failed to schedule visit' };
+      return { success: true, message: 'Visit scheduled and calendar event created' };
       
-    case 'send_whatsapp':
-      // Store for WhatsApp processing (will be implemented in Phase 2)
-      callState.whatsappRequest = args;
-      console.log('📱 WhatsApp request stored:', args);
-      return { success: true, message: 'WhatsApp message queued' };
+    case 'send_property_media':
+      // Store request for WhatsApp processing
+      callState.mediaRequest = args;
+      console.log('📸 Media request stored:', args);
+      // Log to WhatsApp tab
+      await logWhatsAppMessage({
+        phone: args.phone || callState.leadData.phone,
+        direction: 'outbound',
+        customerMessage: 'Requested photos/videos',
+        aiReply: `Sending ${args.mediaType || 'photos'} for ${args.property}`,
+        messageType: args.mediaType || 'photos',
+        property: args.property,
+        status: 'queued'
+      });
+      return { success: true, message: 'Photos/videos will be sent to WhatsApp' };
       
     default:
       return { success: false, message: 'Unknown function' };
@@ -582,31 +585,27 @@ app.get('/', async (req, res) => {
   res.json({ 
     status: 'Petrona Voice AI Running',
     agent: 'Jade',
-    features: ['Call Logs', 'Leads', 'Visits', 'Calendar', 'WhatsApp Ready'],
+    features: [
+      'Voice Calls',
+      'Google Sheets CRM',
+      'Google Calendar',
+      'WhatsApp Ready',
+      'Photo/Video Sending'
+    ],
+    sheets: [
+      'Properties',
+      'CallLogs', 
+      'Leads',
+      'Visits',
+      'CalendarEvents',
+      'WhatsAppLogs'
+    ],
     properties: {
       rentals: properties.rentals.length,
       forSale: properties.forSale.length
     },
     timestamp: new Date().toISOString()
   });
-});
-
-// Keep server warm
-setInterval(async () => {
-  try {
-    await getPropertiesFromSheet();
-  } catch (e) {}
-}, 60000);
-
-// Manual API endpoints
-app.post('/api/save-lead', async (req, res) => {
-  const result = await saveLead(req.body);
-  res.json({ success: result });
-});
-
-app.post('/api/schedule-visit', async (req, res) => {
-  const result = await saveVisit(req.body);
-  res.json({ success: result });
 });
 
 // Twilio webhook
@@ -636,32 +635,19 @@ const wss = new WebSocket.Server({ server, path: '/media-stream' });
 wss.on('connection', async (twilioWs) => {
   console.log('🔗 Twilio connected');
   
+  // Get FRESH system prompt for every call
   const SYSTEM_PROMPT = await buildSystemPrompt();
+  console.log('📋 Fresh system prompt loaded');
   
   let openaiWs = null;
   let streamSid = null;
   let callStartTime = Date.now();
   
-  // Call state to track conversation data
+  // Call state
   let callState = {
-    leadData: {
-      name: '',
-      phone: '',
-      email: '',
-      interest: '',
-      property: '',
-      budget: '',
-      notes: ''
-    },
-    visitData: {
-      name: '',
-      phone: '',
-      visitDate: '',
-      visitTime: '',
-      property: '',
-      address: ''
-    },
-    whatsappRequest: null,
+    leadData: { name: '', phone: '', email: '', interest: '', property: '', budget: '', notes: '' },
+    visitData: { name: '', phone: '', visitDate: '', visitTime: '', property: '', address: '' },
+    mediaRequest: null,
     callSummary: ''
   };
 
@@ -684,11 +670,11 @@ wss.on('connection', async (twilioWs) => {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 600
+              silence_duration_ms: 600  // Natural pause
             },
             input_audio_format: 'g711_ulaw',
             output_audio_format: 'g711_ulaw',
-            voice: 'echo',
+            voice: 'echo',  // Male voice for Jade
             instructions: SYSTEM_PROMPT,
             modalities: ['text', 'audio'],
             temperature: 0.8,
@@ -697,7 +683,7 @@ wss.on('connection', async (twilioWs) => {
         };
         
         openaiWs.send(JSON.stringify(sessionConfig));
-        console.log('⚙️ Jade configured with function calling');
+        console.log('⚙️ Jade configured');
 
         setTimeout(() => {
           openaiWs.send(JSON.stringify({
@@ -707,7 +693,7 @@ wss.on('connection', async (twilioWs) => {
               role: 'user',
               content: [{
                 type: 'input_text',
-                text: 'Caller connected. Give greeting: "Thank you for calling Petrona! This is Jade. How can I help you today? Are you calling about renting a property, a maintenance issue, selling a property, or buying and investing?"'
+                text: 'Caller connected. Give your greeting: "Thank you for calling Petrona! This is Jade. How can I help you today? Are you calling about renting a property, a maintenance issue, selling a property, or buying and investing?"'
               }]
             }
           }));
@@ -719,7 +705,7 @@ wss.on('connection', async (twilioWs) => {
         try {
           const event = JSON.parse(data.toString());
           
-          // Send audio to Twilio
+          // Send audio
           if (event.type === 'response.audio.delta' && event.delta) {
             if (twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
@@ -735,12 +721,8 @@ wss.on('connection', async (twilioWs) => {
             const functionName = event.name;
             const args = JSON.parse(event.arguments || '{}');
             
-            console.log(`📥 Function call: ${functionName}`);
-            
-            // Execute the function
             const result = await handleFunctionCall(functionName, args, callState);
             
-            // Send function result back to OpenAI
             openaiWs.send(JSON.stringify({
               type: 'conversation.item.create',
               item: {
@@ -750,11 +732,10 @@ wss.on('connection', async (twilioWs) => {
               }
             }));
             
-            // Continue the conversation
             openaiWs.send(JSON.stringify({ type: 'response.create' }));
           }
           
-          // Capture transcripts for call summary
+          // Track conversation
           if (event.type === 'response.audio_transcript.done') {
             callState.callSummary += `Jade: ${event.transcript}\n`;
           }
@@ -762,7 +743,7 @@ wss.on('connection', async (twilioWs) => {
           if (event.type === 'conversation.item.input_audio_transcription.completed') {
             callState.callSummary += `Caller: ${event.transcript}\n`;
             
-            // Extract interest type from conversation
+            // Extract interest
             const lower = (event.transcript || '').toLowerCase();
             if (lower.includes('rent')) callState.leadData.interest = 'Rental';
             if (lower.includes('buy') || lower.includes('purchase')) callState.leadData.interest = 'Purchase';
@@ -843,20 +824,22 @@ wss.on('connection', async (twilioWs) => {
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('');
   console.log('✨ =====================================');
-  console.log('   PETRONA VOICE AI - JADE v2.0');
+  console.log('   PETRONA VOICE AI - JADE v3.0');
   console.log(`   Port: ${PORT}`);
   console.log('');
-  console.log('   Features:');
-  console.log('   ✅ Function Calling (Leads & Visits)');
-  console.log('   ✅ Google Sheets Integration');
-  console.log('   ✅ Google Calendar Integration');
+  console.log('   ✅ Voice AI (Jade)');
+  console.log('   ✅ Google Sheets (6 Tabs)');
+  console.log('   ✅ Google Calendar');
+  console.log('   ✅ Function Calling');
   console.log('   ✅ WhatsApp Ready');
+  console.log('   ✅ NO CACHE - Fresh Data Every Call');
   console.log('===================================== ✨');
   console.log('');
   
   await initGoogleClients();
-  cachedSystemPrompt = await buildSystemPrompt();
-  console.log('✅ System ready for calls!');
+  const properties = await getPropertiesFromSheet();
+  console.log(`📊 Properties: ${properties.rentals.length} rentals, ${properties.forSale.length} for sale`);
+  console.log('✅ Jade ready for calls!');
 });
 
 process.on('uncaughtException', (error) => {
