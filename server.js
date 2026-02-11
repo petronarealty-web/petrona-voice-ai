@@ -26,6 +26,7 @@ const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1HC91zPEdEzUq1rajAhQbzcwSgOnQSOULYaM9LYlvhb4';
 
 let activeCalls = 0;
+const recentCallers = new Map(); // Store recent caller numbers
 let googleAuth = null;
 let sheetsClient = null;
 let calendarClient = null;
@@ -621,13 +622,14 @@ app.post('/incoming-call', (req, res) => {
   }
 
   const host = req.headers.host;
+  // Store caller number for lookup by callSid
+  if (caller) recentCallers.set(Date.now().toString(), caller);
+
   res.type('text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://${host}/media-stream">
-      <Parameter name="callerNumber" value="${caller}" />
-    </Stream>
+    <Stream url="wss://${host}/media-stream" />
   </Connect>
 </Response>`);
 });
@@ -668,18 +670,11 @@ wss.on('connection', async (twilioWs) => {
   activeCalls++;
   console.log(`📊 Active: ${activeCalls}`);
 
-  let SYSTEM_PROMPT;
-  try {
-    SYSTEM_PROMPT = await buildSystemPrompt();
-    console.log('📋 Fresh prompt loaded');
-  } catch (e) {
-    console.error('❌ Prompt error:', e.message);
-    SYSTEM_PROMPT = 'You are Jade, a property consultant at Petrona Realty. Be warm, natural, and helpful.';
-  }
-
   let openaiWs = null, streamSid = null, callStartTime = Date.now();
   let reconnectAttempts = 0;
   const MAX_RECONNECTS = 2;
+  let SYSTEM_PROMPT = null;
+  let promptReady = false;
 
   const cs = {
     callerPhone: '', callSid: '', leadSaved: false,
@@ -689,6 +684,10 @@ wss.on('connection', async (twilioWs) => {
   };
 
   const connectToOpenAI = () => {
+    if (!SYSTEM_PROMPT) {
+      console.log('⏳ Waiting for prompt before connecting to OpenAI...');
+      return;
+    }
     try {
       openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17', {
         headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' },
@@ -789,13 +788,24 @@ wss.on('connection', async (twilioWs) => {
   twilioWs.on('message', (msg) => {
     try {
       const data = JSON.parse(msg.toString());
+      // Log EVERY event type from Twilio for debugging
+      console.log(`📨 Twilio event: ${data.event}`);
+      
+      if (data.event === 'connected') {
+        console.log('🔗 Stream connected (waiting for start...)');
+      }
       if (data.event === 'start') {
         streamSid = data.start.streamSid;
         callStartTime = Date.now();
         if (data.start.customParameters) cs.callerPhone = data.start.customParameters.callerNumber || '';
         if (data.start.callSid) cs.callSid = data.start.callSid;
         console.log(`📞 Started | ${streamSid} | From: ${cs.callerPhone || '?'}`);
-        connectToOpenAI();
+        // Only connect if prompt is ready, otherwise it'll connect when prompt finishes
+        if (promptReady) {
+          connectToOpenAI();
+        } else {
+          console.log('⏳ Start received, waiting for prompt...');
+        }
       }
       if (data.event === 'media' && openaiWs?.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: data.media.payload }));
@@ -815,6 +825,23 @@ wss.on('connection', async (twilioWs) => {
   });
 
   twilioWs.on('error', (e) => console.error('❌ Twilio WS:', e.message));
+
+  // Load system prompt AFTER registering listeners (so start event isn't missed)
+  try {
+    SYSTEM_PROMPT = await buildSystemPrompt();
+    promptReady = true;
+    console.log('📋 Fresh prompt loaded');
+    // If start event already arrived while we were loading, connect now
+    if (streamSid && !openaiWs) {
+      console.log('🔗 Start was waiting — connecting to OpenAI now');
+      connectToOpenAI();
+    }
+  } catch (e) {
+    console.error('❌ Prompt error:', e.message);
+    SYSTEM_PROMPT = 'You are Jade, a property consultant at Petrona Realty in Connecticut. Be warm, natural, and helpful. Help callers with property inquiries.';
+    promptReady = true;
+    if (streamSid && !openaiWs) connectToOpenAI();
+  }
 });
 
 // ==================== START ====================
