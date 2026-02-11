@@ -284,13 +284,19 @@ async function updateLeadStatus(leadData, newStatus) {
 async function saveVisit(d) {
   if (!sheetsClient) return false;
   try {
+    // Resolve "Saturday" → "Saturday, February 15, 2026" (actual date)
+    const { startDateTime } = parseVisitDateTime(d.visitDate, d.visitTime);
+    const resolved = new Date(startDateTime);
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const resolvedDateStr = `${days[resolved.getDay()]}, ${resolved.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`;
+
     await sheetsClient.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID, range: 'Visits!A:I', valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[getTimestamp(), d.visitDate||'', d.visitTime||'', d.name||'', d.phone||'', d.property||'', d.address||'', d.notes||'', 'Scheduled']] },
+      requestBody: { values: [[getTimestamp(), resolvedDateStr, d.visitTime||'', d.name||'', d.phone||'', d.property||'', d.address||'', d.notes||'', 'Scheduled']] },
     });
-    console.log('📅 Visit saved');
+    console.log(`📅 Visit saved: ${resolvedDateStr} at ${d.visitTime}`);
     const cal = await createCalendarEvent(d);
-    if (cal) await logCalendarEvent(d, cal);
+    if (cal) await logCalendarEvent({ ...d, visitDate: resolvedDateStr }, cal);
     return true;
   } catch (e) { console.error('Save visit error:', e.message); return false; }
 }
@@ -299,7 +305,7 @@ async function createCalendarEvent(d) {
   if (!calendarClient) return null;
   try {
     const { startDateTime, endDateTime } = parseVisitDateTime(d.visitDate, d.visitTime);
-    const r = await calendarClient.events.insert({ calendarId: 'primary', requestBody: {
+    const r = await calendarClient.events.insert({ calendarId: 'petronarealty@gmail.com', requestBody: {
       summary: `🏠 Property Viewing — ${d.name||'Client'}`,
       description: `Property: ${d.property||'TBD'}\nAddress: ${d.address||'TBD'}\nPhone: ${d.phone||'N/A'}\nInterest: ${d.interest||'Rental'}\nNotes: ${d.notes||'None'}\n\nBooked via Jade v5.0`,
       location: d.address||'',
